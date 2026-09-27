@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Paper — Personal Notebook</title>
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Open+Sans:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;700&family=Montserrat:wght@400;600;700&family=Manrope:wght@400;600;700&family=Outfit:wght@400;600;700&family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=PT+Serif:ital,wght@0,400;0,700;1,400&family=Merriweather:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&display=swap" rel="stylesheet">
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+<header>
+  <div class="logo">Paper<span>·</span></div>
+
+  <button class="iconbtn" id="new" title="Новый документ (Ctrl+N)" aria-label="Новый документ">
+    <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path d="M5 12h14"/>
+      <path d="M12 5v14"/>
+    </svg>
+  </button>
+
+  <button class="iconbtn" id="undo" title="Отменить (Ctrl+Z)" aria-label="Отменить">
+    <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path d="M9 14 4 9l5-5"/>
+      <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>
+    </svg>
+  </button>
+
+  <button class="iconbtn" id="redo" title="Повторить (Ctrl+Y)" aria-label="Повторить">
+    <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <path d="m15 14 5-5-5-5"/>
+      <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>
+    </svg>
+  </button>
+
+  <div class="search"><input id="find" placeholder="Поиск · Ctrl+F"></div>
+  <span id="status">Сохранено</span>
+
+  <button class="iconbtn" id="theme" title="Сменить тему" aria-label="Сменить тему">
+    <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <circle cx="12" cy="12" r="4"/>
+      <path d="M12 2v2"/><path d="M12 20v2"/>
+      <path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/>
+      <path d="M2 12h2"/><path d="M20 12h2"/>
+      <path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+    </svg>
+  </button>
+
+  <button class="iconbtn" id="menu" title="Меню (Ctrl+K)" aria-label="Меню">
+    <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+      <circle cx="12" cy="12" r="1"/>
+      <circle cx="19" cy="12" r="1"/>
+      <circle cx="5" cy="12" r="1"/>
+    </svg>
+  </button>
+</header>
+
+<main><section class="page">
+  <h1 class="title" id="title" contenteditable spellcheck="true"></h1>
+  <div class="editor" id="editor"></div>
+</section></main>
+</div>
+
+<div class="floatbar" id="floatbar" role="toolbar" aria-label="Форматирование">
+
+  <button data-cmd="bold" title="Жирный (Ctrl+B)" aria-label="Жирный">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M6 12h9a4 4 0 0 1 0 8H7a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h7a4 4 0 0 1 0 8"/>
+    </svg>
+  </button>
+
+  <button data-cmd="italic" title="Курсив (Ctrl+I)" aria-label="Курсив">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="19" x2="10" y1="4" y2="4"/>
+      <line x1="14" x2="5" y1="20" y2="20"/>
+      <line x1="15" x2="9" y1="4" y2="20"/>
+    </svg>
+  </button>
+
+  <button data-cmd="underline" title="Подчёркнутый (Ctrl+U)" aria-label="Подчёркнутый">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M6 4v6a6 6 0 0 0 12 0V4"/>
+      <line x1="4" x2="20" y1="20" y2="20"/>
+    </svg>
+  </button>
+
+  <button data-cmd="strike" title="Зачёркнутый" aria-label="Зачёркнутый">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M16 4H9a3 3 0 0 0-2.83 4"/>
+      <path d="M14 12a4 4 0 0 1 0 8H6"/>
+      <line x1="4" x2="20" y1="12" y2="12"/>
+    </svg>
+  </button>
+
+  <span class="fb-sep"></span>
+
+  <button data-cmd="code" title="Код" aria-label="Код">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <polyline points="16 18 22 12 16 6"/>
+      <polyline points="8 6 2 12 8 18"/>
+    </svg>
+  </button>
+
+  <button data-cmd="highlight" title="Выделить маркером" aria-label="Выделить">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="m9 11-6 6v3h9l3-3"/>
+      <path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4"/>
+    </svg>
+  </button>
+
+  <button data-cmd="link" title="Ссылка" aria-label="Ссылка">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+      <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+    </svg>
+  </button>
+
+  <span class="fb-sep"></span>
+
+  <button data-cmd="align-left" title="По левому краю" aria-label="По левому краю">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="21" x2="3" y1="6" y2="6"/>
+      <line x1="15" x2="3" y1="12" y2="12"/>
+      <line x1="17" x2="3" y1="18" y2="18"/>
+    </svg>
+  </button>
+
+  <button data-cmd="align-center" title="По центру" aria-label="По центру">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="21" x2="3" y1="6" y2="6"/>
+      <line x1="17" x2="7" y1="12" y2="12"/>
+      <line x1="19" x2="5" y1="18" y2="18"/>
+    </svg>
+  </button>
+
+  <button data-cmd="align-right" title="По правому краю" aria-label="По правому краю">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="21" x2="3" y1="6" y2="6"/>
+      <line x1="21" x2="9" y1="12" y2="12"/>
+      <line x1="21" x2="7" y1="18" y2="18"/>
+    </svg>
+  </button>
+
+  <span class="fb-sep"></span>
+
+  <button data-cmd="bullets" title="Маркированный список" aria-label="Маркированный список">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="9" x2="21" y1="6" y2="6"/>
+      <line x1="9" x2="21" y1="12" y2="12"/>
+      <line x1="9" x2="21" y1="18" y2="18"/>
+      <circle cx="5" cy="6" r="1.2"/>
+      <circle cx="5" cy="12" r="1.2"/>
+      <circle cx="5" cy="18" r="1.2"/>
+    </svg>
+  </button>
+
+  <button data-cmd="numbered" title="Нумерованный список (Ctrl+Shift+7)" aria-label="Нумерованный список">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <line x1="10" x2="21" y1="6" y2="6"/>
+      <line x1="10" x2="21" y1="12" y2="12"/>
+      <line x1="10" x2="21" y1="18" y2="18"/>
+      <path d="M4 6h1v4"/>
+      <path d="M4 10h2"/>
+      <path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>
+    </svg>
+  </button>
+
+  <button data-cmd="h1" title="Сделать заголовком H1" aria-label="Заголовок 1">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="M4 12h8"/>
+      <path d="M4 18V6"/>
+      <path d="M12 18V6"/>
+      <path d="m17 12 3-2v8"/>
+    </svg>
+  </button>
+
+  <button data-cmd="clear" title="Убрать форматирование" aria-label="Убрать форматирование">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/>
+      <path d="M22 21H7"/>
+      <path d="m5 11 9 9"/>
+    </svg>
+  </button>
+
+  <span class="fb-sep"></span>
+
+  <button data-cmd="font" title="Шрифт выделенного" aria-label="Шрифт">
+    <svg class="lucide" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <polyline points="4 7 4 4 20 4 20 7"/>
+      <line x1="9" x2="15" y1="20" y2="20"/>
+      <line x1="12" x2="12" y1="4" y2="20"/>
+    </svg>
+  </button>
+</div>
+
+<div class="markermenu" id="markermenu" role="menu" aria-label="Вид маркера">
+  <button data-marker="none" title="Без маркера">∅</button>
+  <button data-marker="disc" title="Диск">●</button>
+  <button data-marker="circle" title="Круг">○</button>
+  <button data-marker="square" title="Квадрат">■</button>
+  <button data-marker="diamond" title="Ромб">◆</button>
+  <button data-marker="dot" title="Точка">·</button>
+  <button data-marker="arrow" title="Стрелка">→</button>
+</div>
+
+<div class="fontmenu" id="fontmenu" role="menu" aria-label="Выбор шрифта">
+  <div class="fontmenu-search">
+    <input id="fontmenu-input" placeholder="Поиск шрифта…" autocomplete="off">
+  </div>
+  <div class="fontmenu-list" id="fontmenu-list"></div>
+</div>
+
+<div class="handlemenu" id="handlemenu" role="menu" aria-label="Настройки блока">
+  <div class="hm-section">
+    <div class="hm-label">Тип блока</div>
+    <div class="hm-row" data-group="type">
+      <button data-val="text">Текст</button>
+      <button data-val="h1">H1</button>
+      <button data-val="h2">H2</button>
+      <button data-val="h3">H3</button>
+      <button data-val="ul">Маркеры</button>
+      <button data-val="ol">Цифры</button>
+      <button data-val="quote">Цитата</button>
+      <button data-val="code">Код</button>
+    </div>
+  </div>
+
+  <div class="hm-section" data-section="marker" hidden>
+    <div class="hm-label">Маркер списка</div>
+    <div class="hm-marker-grid" data-group="marker">
+      <button data-val="" title="Без маркера">∅</button>
+      <button data-val="disc" title="Диск">●</button>
+      <button data-val="circle" title="Круг">○</button>
+      <button data-val="square" title="Квадрат">■</button>
+      <button data-val="diamond" title="Ромб">◆</button>
+      <button data-val="dot" title="Точка">·</button>
+      <button data-val="arrow" title="Стрелка">→</button>
+    </div>
+
+  <div class="hm-section">
+    <div class="hm-label">Фон блока</div>
+
+    <div class="hm-bg-grid" data-group="bg">
+      <button data-val="" class="hm-bg-card hm-swatch-none title-none" title="Без фона">
+        <span class="hm-bg-circle" style="--sw: transparent"></span>
+        <span class="hm-bg-name">Нет</span>
+      </button>
+
+      <button data-val="soft" class="hm-bg-card" title="Мягкий">
+        <span class="hm-bg-circle" style="--sw: #dce8e2"></span>
+        <span class="hm-bg-name">Soft</span>
+      </button>
+
+      <button data-val="warm" class="hm-bg-card" title="Тёплый">
+        <span class="hm-bg-circle" style="--sw: #f3e4a6"></span>
+        <span class="hm-bg-name">Warm</span>
+      </button>
+
+      <button data-val="rose" class="hm-bg-card" title="Розовый">
+        <span class="hm-bg-circle" style="--sw: #f3d9d9"></span>
+        <span class="hm-bg-name">Rose</span>
+      </button>
+
+      <button data-val="sky" class="hm-bg-card" title="Небесный">
+        <span class="hm-bg-circle" style="--sw: #d6e3f3"></span>
+        <span class="hm-bg-name">Sky</span>
+      </button>
+
+      <button data-val="lilac" class="hm-bg-card" title="Лиловый">
+        <span class="hm-bg-circle" style="--sw: #e2dbf3"></span>
+        <span class="hm-bg-name">Lilac</span>
+      </button>
+
+      <button data-val="mint" class="hm-bg-card" title="Мятный">
+        <span class="hm-bg-circle" style="--sw: #cdeadd"></span>
+        <span class="hm-bg-name">Mint</span>
+      </button>
+
+      <button data-val="sand" class="hm-bg-card" title="Песочный">
+        <span class="hm-bg-circle" style="--sw: #eee0ce"></span>
+        <span class="hm-bg-name">Sand</span>
+      </button>
+    </div>
+  </div>
+
+  <div class="hm-section">
+    <div class="hm-label">Шрифт блока</div>
+    <div class="hm-row" data-group="font">
+      <button data-val="">По умолч.</button>
+      <button data-val="sans">Sans</button>
+      <button data-val="serif">Serif</button>
+      <button data-val="mono">Mono</button>
+    </div>
+  </div>
+
+  <div class="hm-section">
+    <div class="hm-label">Отступ слева</div>
+    <div class="hm-row" data-group="indent">
+      <button data-val="0">0</button>
+      <button data-val="1">1</button>
+      <button data-val="2">2</button>
+      <button data-val="3">3</button>
+    </div>
+  </div>
+
+  <div class="hm-actions">
+    <button data-action="duplicate">Дублировать</button>
+    <button data-action="delete" class="danger">Удалить</button>
+  </div>
+</div>
+
+<div class="backdrop" id="backdrop"></div>
+
+<div class="palette" id="palette">
+  <input id="cmdinput" placeholder="Введите команду…">
+  <div class="results" id="cmdresults"></div>
+</div>
+
+<div class="slash" id="slash">
+  <input id="slashinput" placeholder="Что добавить?">
+  <div class="results" id="slashresults"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<input id="file" type="file" accept="image/*" hidden>
+
+<script src="js/utils.js"></script>
+<script src="js/state.js"></script>
+<script src="js/render.js"></script>
+<script src="js/menus.js"></script>
+<script src="js/io.js"></script>
+<script src="js/main.js"></script>
+
+</body>
+</html>
