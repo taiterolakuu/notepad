@@ -1,5 +1,5 @@
 /* ============================================================
-   render.js — рендер блоков, таблиц, колонок, основной render
+   render.js
    Зависит от: utils, state
    ============================================================ */
 
@@ -15,6 +15,8 @@ const {
 } = U;
 
 const St = () => window.App.state.S;
+const getActiveDoc = () => window.App.state.getActiveDoc();
+
 const setActive = v => window.App.state.setActive(v);
 const setSelectedBlock = v => window.App.state.setSelectedBlock(v);
 const setSelectedRange = (a, b) => window.App.state.setSelectedRange(a, b);
@@ -28,21 +30,68 @@ const commit = b => window.App.state.commit(b);
 const commitDebounced = b => window.App.state.commitDebounced(b);
 const save = () => window.App.state.save();
 
+/* ============================================================
+   Wikilinks helpers
+   ============================================================ */
+
+function wikilinkResolver(name){
+  const r = window.App.state.resolveDocByName(name);
+  if (r) return { id: r.doc.id };
+  return { missing: true };
+}
+
+function toDisplayHTML(html){
+  return U.renderWikilinks(html || "", wikilinkResolver);
+}
+
+/* ПАТЧ 2.2: toSourceHTML сохраняет анкор при обратном преобразовании */
+function toSourceHTML(html){
+  if (!html) return "";
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  tmp.querySelectorAll("a.wikilink").forEach(a => {
+    const name   = a.getAttribute("data-wikilink") || a.textContent || "";
+    const anchor = a.getAttribute("data-wikilink-anchor") || "";
+    const full   = anchor ? `${name}#${anchor}` : name;
+    a.replaceWith(document.createTextNode(`[[${full}]]`));
+  });
+  return tmp.innerHTML;
+}
+
+/* ============================================================
+   Paste
+   ============================================================ */
+
 function makePasteHandler(target){
   return function(e){
     const html = e.clipboardData?.getData("text/html");
     const text = e.clipboardData?.getData("text/plain");
     if (!html && !text) return;
     e.preventDefault();
-    const clean = html ? sanitize(html) : escape(text).replace(/\n/g, "<br>");
+
+    let clean;
+    if (html){
+      clean = U.cleanPastedHTML(sanitize(html));
+    } else {
+      clean = escape(text).replace(/\n/g, "<br>");
+    }
+
     document.execCommand("insertHTML", false, clean);
+
+    try {
+      const sel = getSelection();
+      if (sel.rangeCount){
+        const r = sel.getRangeAt(0);
+        r.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(r);
+      }
+    } catch(_){}
   };
 }
 
 /* ---------- Cleanup ---------- */
 
-/* Убирает пустые <li>, оставшиеся после правок. Если список становится
-   пустым полностью — удаляет сам список. */
 function cleanupEmptyLis(body){
   [...body.querySelectorAll("ul, ol")].forEach(list => {
     const items = [...list.children].filter(c => c.tagName === "LI");
@@ -63,6 +112,17 @@ function renderBlock(b){
   w.dataset.id = b.id;
   w.dataset.type = b.type;
 
+  /* ПАТЧ 2.2: data-anchor для кастомного ID */
+  if (b.customId) w.dataset.anchor = b.customId;
+
+  /* ПАТЧ 2.2: маркер блока (для любого типа) */
+  if (b.blockMarker){
+    w.dataset.blockMarker = b.blockMarker;
+    if (b.blockMarkerColor){
+      w.style.setProperty("--block-marker-color", b.blockMarkerColor);
+    }
+  }
+
   if (b.bg)     w.dataset.bg = b.bg;
   if (b.font)   w.dataset.font = b.font;
   if (b.indent) w.dataset.indent = b.indent;
@@ -71,7 +131,6 @@ function renderBlock(b){
 
   if (St().selectedId === b.id) w.classList.add("selected");
 
-  /* диапазон выделения — визуальная подсветка нескольких блоков */
   if (St().selectedRange){
     const ids = new Set(window.App.state.blockIdsInRange(St().selectedRange));
     if (ids.has(b.id)) w.classList.add("in-selection");
@@ -142,14 +201,18 @@ function renderBlock(b){
     const t = el("div", "todo-text");
     t.contentEditable = true;
     t.spellcheck = true;
-    t.innerHTML = b.content || "";
+    t.dir = "auto";
+    t.innerHTML = toDisplayHTML(b.content || "");
     t.style.flex = "1";
     t.style.minWidth = "0";
     t.style.outline = "0";
     t.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
     t.oninput = () => {
       const wasEmpty = b.content === "";
-      b.content = t.innerHTML;
+      b.content = toSourceHTML(t.innerHTML);
+
+      try { window.App.wikilinkPopover?.onInput(b, t); } catch(e){}
+
       if (wasEmpty) commit(snapshot());
       else          commitDebounced(snapshot());
       save();
@@ -174,19 +237,21 @@ function renderBlock(b){
     (b.type === "code"  ? " code"  : "")
   );
 
-  body.innerHTML = b.content || "";
+  body.innerHTML = toDisplayHTML(b.content || "");
 
   body.contentEditable = true;
   body.spellcheck = b.type !== "code";
+  body.dir = "auto";
   body.dataset.placeholder =
     b.type === "code" ? "Код…" : "Пишите здесь…";
 
   body.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
   body.oninput = () => {
     const before = snapshot();
-    b.content = body.innerHTML;
+    b.content = toSourceHTML(body.innerHTML);
 
-    /* список стал пустым — превращаем блок обратно в text */
+    try { window.App.wikilinkPopover?.onInput(b, body); } catch(e){}
+
     if ((b.type === "ul" || b.type === "ol") && listIsEmpty(body)){
       const old = snapshot();
       b.type = "text";
@@ -225,10 +290,11 @@ function renderTable(b){
     row.forEach((v, ci) => {
       const c = document.createElement(ri === 0 ? "th" : "td");
       c.contentEditable = true;
-      c.innerHTML = v || "";
+      c.dir = "auto";
+      c.innerHTML = toDisplayHTML(v || "");
       c.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
       c.oninput = () => {
-        b.rows[ri][ci] = c.innerHTML;
+        b.rows[ri][ci] = toSourceHTML(c.innerHTML);
         save();
         commitDebounced(snapshot());
       };
@@ -290,27 +356,43 @@ function focusCell(b, r, c){
   cells[idx]?.focus();
 }
 
-/* ---------- Columns ---------- */
+/* ============================================================
+   ПАТЧ 2.1: Columns — новые настройки (widths, gap, valign),
+   панель управления сверху блока (A), drag-разделитель
+   ============================================================ */
+
+function buildColsTemplate(widths){
+  return widths.map(w => `${w}fr`).join(" ");
+}
 
 function renderColumns(b){
   const box = el("div", "body");
+
   const g = el("div", "cols");
   g.dataset.n = b.cols;
+  g.dataset.valign = b.valign || "top";
 
-  if (!Array.isArray(b.content)){
-    b.content = Array(b.cols).fill("");
+  if (!Array.isArray(b.content)) b.content = Array(b.cols).fill("");
+  if (!Array.isArray(b.widths) || b.widths.length !== b.cols){
+    b.widths = Array(b.cols).fill(1 / b.cols);
   }
+  if (!Number.isFinite(b.gap)) b.gap = 14;
+
+  /* CSS-переменные */
+  g.style.setProperty("--cols-gap", b.gap + "px");
+  g.style.setProperty("--cols-template", buildColsTemplate(b.widths));
 
   for (let i = 0; i < b.cols; i++){
     const c = el("div", "col");
     const q = el("div", "body");
     q.contentEditable = true;
+    q.dir = "auto";
     q.dataset.col = i;
     q.dataset.placeholder = "Колонка…";
-    q.innerHTML = b.content[i] || "";
+    q.innerHTML = toDisplayHTML(b.content[i] || "");
     q.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
     q.oninput = () => {
-      b.content[i] = q.innerHTML;
+      b.content[i] = toSourceHTML(q.innerHTML);
       save();
       commitDebounced(snapshot());
     };
@@ -318,36 +400,313 @@ function renderColumns(b){
     c.append(q);
     g.append(c);
   }
+
+  /* Resizer'ы между колонками */
+  if (b.cols > 1){
+    for (let i = 0; i < b.cols - 1; i++){
+      const rz = el("div", "col-resizer");
+      rz.dataset.col = i;
+      rz.dataset.blockId = b.id;
+      /* Позиция: граница между i и i+1 колонкой = сумма widths[0..i] */
+      const pos = b.widths.slice(0, i + 1).reduce((a, w) => a + w, 0);
+      rz.style.left = `calc(${pos * 100}% - 5px)`;
+      g.append(rz);
+    }
+  }
+
+  /* Панель управления (A: сверху блока) */
+  const toolbar = buildColsToolbar(b);
+
+  box.append(toolbar);
   box.append(g);
 
-  const bar = el("div", "tablebar");
+  return box;
+}
+
+/* Панель управления колонками */
+function buildColsToolbar(b){
+  const bar = el("div", "cols-toolbar");
+
+  /* Кол-во колонок */
   [2, 3, 4].forEach(n => {
-    const q = document.createElement("button");
-    q.textContent = n + " кол.";
-    q.onclick = () => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = String(n);
+    btn.title = n + " колонки";
+    if (b.cols === n) btn.classList.add("on");
+    btn.onmousedown = e => e.preventDefault();
+    btn.onclick = () => {
       const old = snapshot();
       b.cols = n;
-      b.content = Array.from({ length: n }, (_, i) => b.content[i] || "");
+      const arr = Array.isArray(b.content) ? b.content.slice(0, n) : [];
+      while (arr.length < n) arr.push("");
+      b.content = arr;
+      const w = Array.isArray(b.widths) ? b.widths.slice(0, n) : [];
+      while (w.length < n) w.push(1);
+      const sum = w.reduce((a, x) => a + x, 0) || 1;
+      b.widths = w.map(x => x / sum);
       commit(old);
       render();
       setSelectedBlock(b.id);
     };
-    bar.append(q);
+    bar.append(btn);
   });
-  box.append(bar);
 
-  return box;
+  /* Разделитель */
+  const sep1 = el("span", "ct-sep");
+  bar.append(sep1);
+
+  /* Пресеты пропорций для текущего числа колонок */
+  const presets = {
+    2: [
+      { label: "1:1",  w: [1,1] },
+      { label: "2:1",  w: [2,1] },
+      { label: "1:2",  w: [1,2] },
+      { label: "3:1",  w: [3,1] }
+    ],
+    3: [
+      { label: "1:1:1", w: [1,1,1] },
+      { label: "2:1:1", w: [2,1,1] },
+      { label: "1:2:1", w: [1,2,1] },
+      { label: "1:1:2", w: [1,1,2] }
+    ],
+    4: [
+      { label: "1:1:1:1", w: [1,1,1,1] }
+    ]
+  };
+
+  (presets[b.cols] || presets[2]).forEach(p => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.title = "Пропорции " + p.label;
+
+    /* Мини-превью */
+    const ratio = el("span", "ct-ratio");
+    p.w.forEach(w => {
+      const seg = document.createElement("span");
+      seg.style.width = (6 + w * 4) + "px";
+      ratio.append(seg);
+    });
+    btn.append(ratio);
+
+    if (isSameWidths(b.widths, p.w)) btn.classList.add("on");
+
+    btn.onmousedown = e => e.preventDefault();
+    btn.onclick = () => {
+      const old = snapshot();
+      const sum = p.w.reduce((a, x) => a + x, 0) || 1;
+      b.widths = p.w.map(x => x / sum);
+      commit(old);
+      render();
+      setSelectedBlock(b.id);
+    };
+    bar.append(btn);
+  });
+
+  /* Разделитель */
+  const sep2 = el("span", "ct-sep");
+  bar.append(sep2);
+
+  /* Valign */
+  const valigns = [
+    ["top",    "По верху",   '<path d="M3 5h18"/><path d="M3 10h10"/><path d="M3 15h14"/>'],
+    ["center", "По центру",  '<path d="M3 5h14"/><path d="M3 10h18"/><path d="M3 15h14"/>'],
+    ["bottom", "По низу",    '<path d="M3 9h14"/><path d="M3 14h10"/><path d="M3 19h18"/>']
+  ];
+  valigns.forEach(([v, title, path]) => {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.title = title;
+    btn.innerHTML = `<svg class="lucide" viewBox="0 0 24 24" aria-hidden="true">${path}</svg>`;
+    if ((b.valign || "top") === v) btn.classList.add("on");
+    btn.onmousedown = e => e.preventDefault();
+    btn.onclick = () => {
+      const old = snapshot();
+      b.valign = v;
+      commit(old);
+      render();
+      setSelectedBlock(b.id);
+    };
+    bar.append(btn);
+  });
+
+  return bar;
+}
+
+function isSameWidths(a, b){
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  const sa = a.reduce((x,y)=>x+y,0) || 1;
+  const sb = b.reduce((x,y)=>x+y,0) || 1;
+  return a.every((w, i) => Math.abs(w/sa - b[i]/sb) < 0.03);
+}
+
+/* ---------- ПАТЧ 2.1: drag-разделитель ---------- */
+
+let _colsDrag = null;   /* { block, colsEl, index, startX, startWidths, sumPx, beforeSnap } */
+
+function bindColumnResizer(){
+  if (bindColumnResizer._bound) return;
+  bindColumnResizer._bound = true;
+
+  document.addEventListener("mousedown", e => {
+    const rz = e.target.closest(".col-resizer");
+    if (!rz) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const blockId = rz.dataset.blockId;
+    const index   = parseInt(rz.dataset.col, 10);
+    const g = rz.closest(".cols");
+    if (!g) return;
+
+    const b = St().blocks.find(x => x.id === blockId);
+    if (!b || b.type !== "columns") return;
+
+    const rect = g.getBoundingClientRect();
+    const startX = e.clientX;
+    const startWidths = [...b.widths];
+    const beforeSnap = snapshot();
+
+    _colsDrag = {
+      block: b,
+      colsEl: g,
+      index,
+      startX,
+      startWidths,
+      sumPx: rect.width,
+      beforeSnap
+    };
+
+    rz.classList.add("dragging");
+    document.body.classList.add("cols-dragging");
+
+    const onMove = ev => {
+      if (!_colsDrag) return;
+      const dx = ev.clientX - _colsDrag.startX;
+      const dRatio = dx / _colsDrag.sumPx;
+
+      const w = [..._colsDrag.startWidths];
+      const minRatio = 0.08;
+
+      let left  = w[_colsDrag.index]     + dRatio;
+      let right = w[_colsDrag.index + 1] - dRatio;
+
+      if (left < minRatio){
+        right -= (minRatio - left);
+        left = minRatio;
+      }
+      if (right < minRatio){
+        left -= (minRatio - right);
+        right = minRatio;
+      }
+
+      w[_colsDrag.index]     = left;
+      w[_colsDrag.index + 1] = right;
+
+      const sum = w.reduce((a, x) => a + x, 0) || 1;
+      _colsDrag.block.widths = w.map(x => x / sum);
+
+      _colsDrag.colsEl.style.setProperty(
+        "--cols-template",
+        buildColsTemplate(_colsDrag.block.widths)
+      );
+    };
+
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.classList.remove("cols-dragging");
+      rz.classList.remove("dragging");
+
+      if (_colsDrag){
+        /* Правильный undo: коммитим состояние ДО drag */
+        commit(_colsDrag.beforeSnap);
+        save();
+      }
+      _colsDrag = null;
+    };
+
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  });
 }
 
 /* ---------- Main render ---------- */
 
 function render(){
-  $("#title").textContent = St().title || "";
-  $("#editor").replaceChildren(...St().blocks.map(renderBlock));
+  const doc = getActiveDoc();
+
+  const titleEl = $("#title");
+  if (titleEl){
+    const displayTitle = doc?.title || "";
+    const isEditing = document.activeElement === titleEl;
+    if (!isEditing && titleEl.textContent !== displayTitle){
+      titleEl.textContent = displayTitle;
+    }
+    titleEl.dir = "auto";
+    if (doc?.color) titleEl.dataset.color = doc.color;
+    else delete titleEl.dataset.color;
+    if (doc?.icon) titleEl.dataset.icon = doc.icon;
+    else delete titleEl.dataset.icon;
+  }
+
+  const editor = $("#editor");
+  editor.replaceChildren(...(doc?.blocks || []).map(renderBlock));
+
   document.documentElement.dataset.theme =
     St().theme === "paper" ? "" : St().theme;
 
-  [...$("#editor").querySelectorAll(".block")].forEach(w => {
+  /* Gap-зоны между блоками */
+  const blockEls = [...editor.querySelectorAll(".block")];
+  blockEls.forEach((w, i) => {
+    if (i > 0){
+      const gap = document.createElement("div");
+      gap.className = "block-gap";
+      gap.dataset.beforeId = w.dataset.id;
+      gap.innerHTML = `<button class="gap-plus" type="button" title="Вставить блок здесь">+</button>`;
+      editor.insertBefore(gap, w);
+    }
+  });
+
+  /* Add-block-zone под последним */
+  const last = blockEls[blockEls.length - 1];
+  const lastId = last?.dataset.id || null;
+  const addZone = document.createElement("div");
+  addZone.className = "add-block-zone";
+  addZone.dataset.afterId = lastId || "";
+  addZone.innerHTML = `
+    <span class="ab-plus">
+      <svg class="lucide" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+        <rect x="3" y="3" width="18" height="18" rx="2"/>
+        <path d="M8 12h8"/>
+        <path d="M12 8v8"/>
+      </svg>
+    </span>
+    <span>Добавить блок</span>`;
+  editor.append(addZone);
+
+  editor.querySelectorAll(".block-gap").forEach(gap => {
+    const plus = gap.querySelector(".gap-plus");
+    if (!plus) return;
+    plus.addEventListener("mousedown", e => e.preventDefault());
+    plus.addEventListener("click", e => {
+      e.stopPropagation();
+      const beforeId = gap.dataset.beforeId;
+      const blocks = window.App.state.getBlocks();
+      const idx = blocks.findIndex(b => b.id === beforeId);
+      add("text", idx >= 0 ? idx : blocks.length);
+    });
+    gap.addEventListener("mouseenter", () => gap.classList.add("hot"));
+    gap.addEventListener("mouseleave", () => gap.classList.remove("hot"));
+  });
+
+  addZone.addEventListener("click", () => {
+    add("text");
+  });
+
+  /* Bind drag-n-drop для блоков */
+  blockEls.forEach(w => {
     const handle = w.querySelector(".handle");
 
     handle?.addEventListener("mousedown", () => {
@@ -388,13 +747,14 @@ function render(){
       w.draggable = false;
       w.classList.remove("dragging");
 
-      const from = St().blocks.findIndex(x => x.id === fromId);
-      const to   = St().blocks.findIndex(x => x.id === toId);
+      const blocks = window.App.state.getBlocks();
+      const from = blocks.findIndex(x => x.id === fromId);
+      const to   = blocks.findIndex(x => x.id === toId);
       if (from < 0 || to < 0 || from === to) return;
 
       const old = snapshot();
-      const [x] = St().blocks.splice(from, 1);
-      St().blocks.splice(to, 0, x);
+      const [x] = blocks.splice(from, 1);
+      blocks.splice(to, 0, x);
       commit(old);
       render();
       setSelectedBlock(x.id);
@@ -409,17 +769,47 @@ function render(){
       }, 0);
     });
   });
+
+  /* ПАТЧ 2.2: нумерация строк документа */
+  if (doc?.showLineNumbers){
+    const fmt = doc.lineNumberFormat || "1.";
+    const fmtNum = (n) => {
+      if (fmt === "1)") return n + ")";
+      if (fmt === "#1") return "#" + n;
+      if (fmt === "L1") return "L" + n;
+      return n + ".";
+    };
+    const blocks = window.App.state.getBlocks();
+    editor.querySelectorAll(".block").forEach((w, i) => {
+      const blk = blocks.find(x => x.id === w.dataset.id);
+      const num = (blk && blk.lineNumber) ? blk.lineNumber : (i + 1);
+      w.dataset.lineNumber = fmtNum(num);
+      w.classList.add("numbered");
+    });
+  }
+
+  /* ПАТЧ 2.1: bind drag-разделителей колонок (один раз) */
+  bindColumnResizer();
+
+  /* Панель backlinks */
+  try { window.App.backlinks?.render(); } catch(e){}
 }
 
 /* ---------- Add / focus ---------- */
 
-function add(type = "text", at = St().blocks.length){
+function add(type = "text", at){
+  const blocks = window.App.state.getBlocks();
+  const idx = (typeof at === "number") ? at : blocks.length;
   const b = newBlock(type);
-  St().blocks.splice(at, 0, b);
+  blocks.splice(idx, 0, b);
   setActive(b.id);
   render();
   setSelectedBlock(b.id);
-  setTimeout(() => focusActive(), 0);
+  setTimeout(() => {
+    focusActive();
+    const w = $(`[data-id="${b.id}"]`);
+    w?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, 0);
   save();
 }
 
@@ -538,7 +928,12 @@ function checkInputRules(b, body){
 /* ---------- Keyboard ---------- */
 
 function keyBlock(e, b, body){
-  /* Tab / Shift+Tab — инлайн-таб */
+  if (window.App.wikilinkPopover && window.App.wikilinkPopover.isOpen()){
+    if (window.App.wikilinkPopover.handleKey(e, b, body)){
+      return;
+    }
+  }
+
   if (e.key === "Tab"){
     e.preventDefault();
     if (!e.shiftKey){
@@ -549,29 +944,26 @@ function keyBlock(e, b, body){
     } else {
       removeInlineTabLeft(body);
     }
-    b.content = body.innerHTML;
+    b.content = toSourceHTML(body.innerHTML);
     save();
     commitDebounced(snapshot());
     return;
   }
 
-  /* ul/ol: Enter — вставить новый <li> после текущего */
   if (e.key === "Enter" && !e.shiftKey && (b.type === "ul" || b.type === "ol")){
     e.preventDefault();
 
     const li = getCurrentLi(body);
     const lis = body.querySelectorAll("li");
 
-    /* пустой <li> и в списке больше одного — выходим из списка */
     if (li && li.innerText.trim() === "" && lis.length > 1){
       li.remove();
       cleanupEmptyLis(body);
-      b.content = body.innerHTML;
+      b.content = toSourceHTML(body.innerHTML);
       save();
       commitDebounced(snapshot());
       return;
     }
-    /* единственный пустой — превращаем в text */
     if (li && li.innerText.trim() === "" && lis.length <= 1){
       const old = snapshot();
       b.type = "text";
@@ -583,7 +975,6 @@ function keyBlock(e, b, body){
       return;
     }
 
-    /* обычный Enter — вставляем новый <li> и ставим каретку */
     let newLi;
     if (li){
       newLi = insertLiAfter(body, li);
@@ -593,23 +984,22 @@ function keyBlock(e, b, body){
       body.append(newLi);
     }
     cleanupEmptyLis(body);
-    b.content = body.innerHTML;
+    b.content = toSourceHTML(body.innerHTML);
     save();
     commitDebounced(snapshot());
     focusLi(newLi);
     return;
   }
 
-  /* Enter в обычном блоке — новый абзац */
   if (e.key === "Enter" && !e.shiftKey &&
       b.type !== "code" && b.type !== "ul" && b.type !== "ol"){
     e.preventDefault();
-    const i = St().blocks.findIndex(x => x.id === b.id);
+    const blocks = window.App.state.getBlocks();
+    const i = blocks.findIndex(x => x.id === b.id);
     add("text", i + 1);
     return;
   }
 
-  /* Backspace */
   if (e.key === "Backspace"){
     if (b.type === "ul" || b.type === "ol"){
       const li = getCurrentLi(body);
@@ -620,7 +1010,7 @@ function keyBlock(e, b, body){
         if (lis.length > 1){
           li.remove();
           cleanupEmptyLis(body);
-          b.content = body.innerHTML;
+          b.content = toSourceHTML(body.innerHTML);
           save();
           commitDebounced(snapshot());
         } else {
@@ -636,13 +1026,14 @@ function keyBlock(e, b, body){
       }
     }
 
+    const blocks = window.App.state.getBlocks();
     if ((body.innerText === "" || body.innerHTML === "<br>") &&
-        St().blocks.length > 1){
+        blocks.length > 1){
       e.preventDefault();
-      const i = St().blocks.findIndex(x => x.id === b.id);
+      const i = blocks.findIndex(x => x.id === b.id);
       const old = snapshot();
-      St().blocks.splice(i, 1);
-      const nextId = St().blocks[Math.max(0, i - 1)].id;
+      blocks.splice(i, 1);
+      const nextId = blocks[Math.max(0, i - 1)].id;
       setActive(nextId);
       commit(old);
       render();
@@ -682,14 +1073,68 @@ function applySavedFonts(){
     serif: "Georgia, serif",
     mono:  "ui-monospace, Consolas, monospace"
   };
-  for (const role of Object.keys(St().fonts || {})){
-    const name = St().fonts[role];
+  const fonts = St().fonts || {};
+  for (const role of Object.keys(fonts)){
+    const name = fonts[role];
     if (varMap[role] && name){
       document.documentElement.style.setProperty(
         varMap[role], `'${name}', ${fallbacks[role]}`
       );
     }
   }
+}
+
+/* ============================================================
+   ПАТЧ 2.2: глобальный обработчик клика по wikilink
+   с поддержкой анкоров [[doc#id]]
+   ============================================================ */
+
+function bindWikilinkClicks(){
+  document.addEventListener("click", e => {
+    const link = e.target.closest(".wikilink");
+    if (!link) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const name   = link.getAttribute("data-wikilink") || link.textContent;
+    const id     = link.getAttribute("data-wikilink-id");
+    /* ПАТЧ 2.2 */
+    const anchor = link.getAttribute("data-wikilink-anchor") || "";
+    const S      = window.App.state.S;
+
+    /* Хелпер: открыть документ и (опционально) скроллить к анкору */
+    const openDoc = (docId) => {
+      /* setActiveDoc — async; дожидаемся рендера и только потом скроллим */
+      Promise.resolve(window.App.state.setActiveDoc(docId)).then(() => {
+        if (anchor){
+          window.App.state.scrollToAnchor(docId, anchor);
+        }
+      });
+    };
+
+    if (id && S.documents[id] && !S.documents[id].trashed){
+      openDoc(id);
+      return;
+    }
+
+    const r = window.App.state.resolveDocByName(name);
+    if (r){
+      openDoc(r.doc.id);
+      if (r.count > 1){
+        U.toast(`Есть ещё ${r.count - 1} документов с таким именем`);
+      }
+      return;
+    }
+
+    if (confirm(`Документ «${name}» не найден. Создать?`)){
+      window.App.state.createDocument({ title: name }).then(doc => {
+        openDoc(doc.id);
+        window.App.sidebar?.render();
+        window.App.tabs?.render();
+      });
+    }
+  });
 }
 
 /* ---------- Public API ---------- */
@@ -699,7 +1144,11 @@ return {
   render, add, focusActive,
   checkInputRules, keyBlock,
   applySavedFonts, makePasteHandler,
-  cleanupEmptyLis
+  cleanupEmptyLis,
+  toDisplayHTML, toSourceHTML,
+  bindWikilinkClicks,
+  /* ПАТЧ 2.1 */
+  bindColumnResizer
 };
 
 })();

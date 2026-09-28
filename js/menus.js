@@ -1,5 +1,7 @@
 /* ============================================================
-   menus.js
+   menus.js — slash, palette, floatbar, font menu, handle menu,
+              список документов, глобальный поиск
+   Зависит от: utils, state, render, io, sidebar, tabs
    ============================================================ */
 
 window.App = window.App || {};
@@ -28,6 +30,7 @@ const save = () => window.App.state.save();
 const saveNow = () => window.App.state.saveNow();
 const undo = () => window.App.state.undo();
 const redo = () => window.App.state.redo();
+const getActiveDoc = () => window.App.state.getActiveDoc();
 
 const render = () => window.App.render.render();
 const add = (...a) => window.App.render.add(...a);
@@ -42,6 +45,7 @@ let floatbarDragging  = false;
 let cmdIndex          = 0;
 let lastCmdLen        = -1;
 let slashBody         = null;
+let paletteMode       = "commands";
 
 const ALIGN_CMDS = new Set(["align-left","align-center","align-right"]);
 
@@ -79,7 +83,14 @@ function slashChoose(type){
   if (b && b.type === "text"){
     const old = snapshot();
     b.type = type;
-    if (type === "columns"){ b.cols = 2; b.content = ["", ""]; }
+    if (type === "columns"){
+      b.cols = 2;
+      b.content = ["", ""];
+      b.widths = [0.5, 0.5];
+      b.gap = 14;
+      b.valign = "top";
+      b.padding = 0;
+    }
     else if (type === "table"){ b.rows = [["",""],["",""]]; b.content = ""; }
     else if (type === "ul" || type === "ol"){
       b.content = "<li><br></li>";
@@ -97,111 +108,423 @@ function slashChoose(type){
   $("#slash").style.display = "none";
 }
 
-/* ---------- Command palette ---------- */
+/* ============================================================
+   Command palette
+   ============================================================ */
 
 const commands = [
-  ["Новый документ",   "Создать чистую страницу",   "new"],
-  ["Текст",            "Добавить абзац",            "text"],
-  ["Заголовок 1",      "Добавить H1",               "h1"],
-  ["Заголовок 2",      "Добавить H2",               "h2"],
-  ["Чек-лист",         "Добавить задачу",           "todo"],
-  ["Таблица",          "Добавить таблицу",          "table"],
-  ["Колонки",          "Добавить колонки",          "columns"],
-  ["Изображение",      "Добавить изображение",      "image"],
-  ["Разделитель",      "Добавить линию",            "divider"],
-  ["Сохранить",        "Сохранить сейчас",          "save"],
-  ["Экспорт HTML",     "Скачать автономный HTML",   "export"],
-  ["Экспорт Markdown", "Скачать Markdown",          "md"],
-  ["Печать / PDF",     "Открыть печать",            "print"],
+  ["Заблокировать сейчас", "Требуется пароль", "lock:now", "Навигация"],
+  /* --- документы --- */
+  ["Новый документ",       "Создать чистый",               "doc:new",            "Документы"],
+  ["Новый из шаблона…",    "Заметка, Встреча, Рецепт…",    "doc:newTemplate",    "Документы"],
+  ["Сохранить как шаблон", "Из текущего документа",        "doc:saveAsTemplate", "Документы"],
+  ["Импорт шаблона…",      "Файл или JSON",                "doc:importTemplate", "Документы"],
+  ["Экспорт всех шаблонов","Скачать .zip",                 "doc:exportTemplates","Документы"],
+  ["Открыть документ…",    "Выбрать из списка",            "doc:open",           "Документы"],
+  ["Переименовать",        "Изменить название текущего",   "doc:rename",         "Документы"],
+  ["Дублировать",          "Копия текущего",               "doc:duplicate",      "Документы"],
+  ["Свойства документа",   "Иконка, цвет, описание",       "doc:props",          "Документы"],
+  ["В корзину",            "Удалить текущий",              "doc:trash",          "Документы"],
+  ["Очистить корзину",     "Удалить навсегда",             "doc:emptyTrash",     "Документы"],
 
-  ["Шрифт: Inter",             "Основной, по умолчанию",  "font:body:Inter"],
-  ["Шрифт: Open Sans",         "Основной, гуманистический","font:body:Open Sans"],
-  ["Шрифт: Plus Jakarta Sans", "Основной, современный",   "font:body:Plus Jakarta Sans"],
+  /* --- блоки --- */
+  ["Текст",              "Добавить абзац",               "block:text",        "Блоки"],
+  ["Заголовок 1",        "Добавить H1",                  "block:h1",          "Блоки"],
+  ["Заголовок 2",        "Добавить H2",                  "block:h2",          "Блоки"],
+  ["Чек-лист",           "Добавить задачу",              "block:todo",        "Блоки"],
+  ["Таблица",            "Добавить таблицу",             "block:table",       "Блоки"],
+  ["Колонки",            "Добавить колонки",             "block:columns",     "Блоки"],
+  ["Изображение",        "Добавить изображение",         "block:image",       "Блоки"],
+  ["Разделитель",        "Горизонтальная линия",         "block:divider",     "Блоки"],
+  ["Удалить блок",       "Ctrl+Backspace",               "block:delete",      "Блоки"],
 
-  ["Шрифт H: Montserrat",      "Заголовки, геометрия",    "font:head:Montserrat"],
-  ["Шрифт H: Manrope",         "Заголовки, сглаженный",   "font:head:Manrope"],
-  ["Шрифт H: Outfit",          "Заголовки, премиум",      "font:head:Outfit"],
-  ["Шрифт H: Inter",           "Заголовки, как текст",    "font:head:Inter"],
+  /* --- форматирование --- */
+  ["Жирный",             "Bold",                          "fmt:bold",          "Формат"],
+  ["Курсив",             "Italic",                        "fmt:italic",        "Формат"],
+  ["Подчёркнутый",       "Underline",                     "fmt:underline",     "Формат"],
+  ["Зачёркнутый",        "Strike",                        "fmt:strike",        "Формат"],
+  ["Убрать формат",      "Clear",                         "fmt:clear",         "Формат"],
+  ["Маркированный список","Bullets",                      "fmt:bullets",       "Формат"],
+  ["Нумерованный список","Numbered",                      "fmt:numbered",      "Формат"],
 
-  ["Шрифт S: Lora",            "Каллиграфический",        "font:serif:Lora"],
-  ["Шрифт S: PT Serif",        "Экранная антиква",        "font:serif:PT Serif"],
-  ["Шрифт S: Merriweather",    "Для чтения",              "font:serif:Merriweather"],
+  /* --- файлы --- */
+  ["Сохранить",          "Сохранить сейчас",              "file:save",         "Файл"],
+  ["Экспорт HTML",       "Активный документ",             "file:exportHTML",   "Файл"],
+  ["Экспорт Markdown",   "Активный документ",             "file:exportMD",     "Файл"],
+  ["Экспорт JSON",       "Активный документ",             "file:exportJSON",   "Файл"],
+  ["Экспорт PDF",        "Открыть печать активного",      "file:exportPDF",    "Файл"],
+  ["Экспорт всех (.zip)","Все документы",                 "file:exportAll",    "Файл"],
+  ["Импорт…",            "HTML / MD / JSON",              "file:import",       "Файл"],
+  ["Печать / PDF",       "Открыть печать",                "file:print",        "Файл"],
+  ["Сброс всех данных",  "Полная очистка хранилища",      "data:reset",        "Файл"],
 
-  ["Шрифт M: JetBrains Mono",  "Код, по умолчанию",       "font:mono:JetBrains Mono"],
-  ["Шрифт M: Fira Code",       "Код, гуманистический",    "font:mono:Fira Code"],
+  /* --- навигация --- */
+  ["Поиск по содержимому","Все документы (Ctrl+Shift+F)", "nav:search",        "Навигация"],
+  ["Следующий документ", "Ctrl+Tab",                      "nav:nextDoc",       "Навигация"],
+  ["Предыдущий документ","Ctrl+Shift+Tab",                "nav:prevDoc",       "Навигация"],
+  ["Свернуть панель",    "Ctrl+\\",                       "nav:toggleSidebar", "Навигация"],
 
-  ["Тема: Paper",      "Светлая бумага",            "theme:paper"],
-  ["Тема: Sepia",      "Тёплая бумага",             "theme:sepia"],
-  ["Тема: Mint",       "Мята",                      "theme:mint"],
-  ["Тема: Dark",       "Тёмная",                    "theme:dark"]
+  /* --- шрифты --- */
+  ["Шрифт: Inter",             "Основной, по умолчанию",  "font:body:Inter",          "Шрифты"],
+  ["Шрифт: Open Sans",         "Основной, гуманистический","font:body:Open Sans",      "Шрифты"],
+  ["Шрифт: Plus Jakarta Sans", "Основной, современный",   "font:body:Plus Jakarta Sans","Шрифты"],
+
+  ["Шрифт H: Montserrat",      "Заголовки, геометрия",    "font:head:Montserrat",     "Шрифты"],
+  ["Шрифт H: Manrope",         "Заголовки, сглаженный",   "font:head:Manrope",        "Шрифты"],
+  ["Шрифт H: Outfit",          "Заголовки, премиум",      "font:head:Outfit",         "Шрифты"],
+  ["Шрифт H: Inter",           "Заголовки, как текст",    "font:head:Inter",          "Шрифты"],
+
+  ["Шрифт S: Lora",            "Каллиграфический",        "font:serif:Lora",          "Шрифты"],
+  ["Шрифт S: PT Serif",        "Экранная антиква",        "font:serif:PT Serif",      "Шрифты"],
+  ["Шрифт S: Merriweather",    "Для чтения",              "font:serif:Merriweather",  "Шрифты"],
+
+  ["Шрифт M: JetBrains Mono",  "Код, по умолчанию",       "font:mono:JetBrains Mono", "Шрифты"],
+  ["Шрифт M: Fira Code",       "Код, гуманистический",    "font:mono:Fira Code",      "Шрифты"],
+
+  /* --- темы --- */
+  ["Тема: Paper",      "Светлая бумага",            "theme:paper", "Темы"],
+  ["Тема: Sepia",      "Тёплая бумага",             "theme:sepia", "Темы"],
+  ["Тема: Mint",       "Мята",                      "theme:mint",  "Темы"],
+  ["Тема: Dark",       "Тёмная",                    "theme:dark",  "Темы"]
 ];
 
-function openPalette(){
-  $("#palette").style.display = "block";
-  $("#backdrop").style.display = "block";
-  $("#cmdinput").value = "";
+function openPalette(initialMode){
+  const p = $("#palette");
+  const b = $("#backdrop");
+  if (!p) return;
+
+  p.style.display = "block";
+  if (b) b.style.display = "block";
+
+  const inp = $("#cmdinput");
+  if (inp){
+    inp.value = "";
+    inp.placeholder = "Введите команду…  ·  > команды · # документы · / блоки · @ шрифты · ~ темы";
+  }
+
+  paletteMode = initialMode || "commands";
   cmdIndex = 0;
   lastCmdLen = -1;
   cmdRender();
-  $("#cmdinput").focus();
+  inp?.focus();
 }
 
 function closeMenus(){
-  $("#palette").style.display = "none";
-  $("#slash").style.display = "none";
-  $("#backdrop").style.display = "none";
+  const p = $("#palette");
+  const s = $("#slash");
+  const b = $("#backdrop");
+  if (p) p.style.display = "none";
+  if (s) s.style.display = "none";
+  if (b) b.style.display = "none";
   setSlashBlockId(null);
+  paletteMode = "commands";
+}
+
+function detectMode(q){
+  if (!q) return "commands";
+  const c = q[0];
+  if (c === ">") return "commands";
+  if (c === "#") return "docs";
+  if (c === "/") return "blocks";
+  if (c === "@") return "fonts";
+  if (c === "~") return "themes";
+  return "mixed";
+}
+
+function stripPrefix(q){
+  if (!q) return "";
+  const c = q[0];
+  if (">#/@~".includes(c)) return q.slice(1).trimStart();
+  return q;
 }
 
 function cmdRender(){
-  const q = $("#cmdinput").value.toLowerCase();
-  const a = commands.filter(x =>
-    (x[0] + x[1]).toLowerCase().includes(q));
+  const inp = $("#cmdinput");
+  if (!inp) return;
 
-  if (a.length !== lastCmdLen){
-    cmdIndex = 0;
-    lastCmdLen = a.length;
+  const raw = inp.value;
+  const mode = detectMode(raw);
+  const q = stripPrefix(raw).toLowerCase();
+
+  let html = "";
+
+  if (mode === "docs" || (mode === "mixed" && !q) || mode === "commands"){
+    if (mode === "docs"){
+      html += renderDocsSection(q);
+    }
   }
-  if (a.length === 0) cmdIndex = 0;
-  if (cmdIndex >= a.length) cmdIndex = Math.max(0, a.length - 1);
 
-  $("#cmdresults").innerHTML = a.map((x, i) =>
-    `<div class="result ${i === cmdIndex ? "sel" : ""}" data-c="${x[2]}">
-       ${x[0]}<small>${x[1]}</small>
-     </div>`
-  ).join("");
+  if (mode === "commands" || mode === "mixed"){
+    html += renderCommandsSection(q);
+  }
 
-  $$("#cmdresults .result").forEach(x =>
-    x.onclick = () => run(x.dataset.c));
+  if (mode === "blocks"){
+    html += renderBlocksSection(q);
+  }
+
+  if (mode === "fonts"){
+    html += renderFontsSection(q);
+  }
+
+  if (mode === "themes"){
+    html += renderThemesSection(q);
+  }
+
+  if (!html){
+    html = `<div class="results-empty">Ничего не найдено</div>`;
+  }
+
+  const res = $("#cmdresults");
+  res.innerHTML = html;
+
+  $$("#cmdresults .result").forEach(el => {
+    el.onclick = () => {
+      const c = el.dataset.c;
+      const d = el.dataset.doc;
+      if (d) openDocById(d);
+      else if (c) run(c);
+    };
+  });
+
+  const items = $$("#cmdresults .result");
+  if (items.length){
+    if (cmdIndex >= items.length) cmdIndex = items.length - 1;
+    if (cmdIndex < 0) cmdIndex = 0;
+    items[cmdIndex]?.classList.add("sel");
+  }
+}
+
+function renderCommandsSection(q){
+  const arr = commands.filter(x =>
+    !q || (x[0] + x[1] + x[3]).toLowerCase().includes(q));
+
+  if (!arr.length) return "";
+
+  let html = `<div class="results-group">Команды</div>`;
+  html += arr.map((x, i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    return `<div class="result ${sel}" data-c="${x[2]}">
+      <b>${escape(x[0])}</b>
+      <small>${escape(x[3])}</small>
+    </div>`;
+  }).join("");
+  return html;
+}
+
+function renderBlocksSection(q){
+  const arr = types.filter(x =>
+    !q || (x[0] + x[1] + x[2]).toLowerCase().includes(q));
+
+  let html = `<div class="results-group">Блоки</div>`;
+  html += arr.map((x, i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    return `<div class="result ${sel}" data-c="block:${x[0]}">
+      <b>${escape(x[1])}</b><small>${escape(x[2])}</small>
+    </div>`;
+  }).join("");
+  return html;
+}
+
+function renderFontsSection(q){
+  const FONTS = [
+    ["Inter","sans"],["Open Sans","sans"],["Plus Jakarta Sans","sans"],
+    ["Montserrat","head"],["Manrope","head"],["Outfit","head"],
+    ["Lora","serif"],["PT Serif","serif"],["Merriweather","serif"],
+    ["JetBrains Mono","mono"],["Fira Code","mono"]
+  ];
+  const arr = FONTS.filter(f => !q || f[0].toLowerCase().includes(q));
+
+  let html = `<div class="results-group">Шрифты</div>`;
+  html += arr.map(([name, role], i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    return `<div class="result ${sel}" data-c="font:${role}:${name}">
+      <b style="font-family:'${name}',system-ui,sans-serif">${name}</b>
+      <small>${role}</small>
+    </div>`;
+  }).join("");
+  return html;
+}
+
+function renderThemesSection(q){
+  const THEMES = [
+    ["paper","Светлая бумага"],["sepia","Тёплая бумага"],
+    ["mint","Мята"],["dark","Тёмная"]
+  ];
+  const arr = THEMES.filter(t => !q || t[0].includes(q) || t[1].toLowerCase().includes(q));
+
+  let html = `<div class="results-group">Темы</div>`;
+  html += arr.map(([key, name], i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    return `<div class="result ${sel}" data-c="theme:${key}">
+      <b>${name}</b><small>${key}</small>
+    </div>`;
+  }).join("");
+  return html;
+}
+
+function renderDocsSection(q){
+  const arr = window.App.state.listDocuments({ query: q }).slice(0, 30);
+
+  let html = `<div class="results-group">Документы</div>`;
+
+  if (!arr.length){
+    html += `<div class="results-empty">Ничего не найдено</div>`;
+    return html;
+  }
+
+  html += arr.map((d, i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    const title = escape(d.title || "Без названия");
+    const meta = new Date(d.updatedAt).toLocaleDateString("ru-RU", { day:"2-digit", month:"short" });
+    return `<div class="result ${sel}" data-doc="${d.id}">
+      <b>${title}</b>
+      <small>${meta}</small>
+    </div>`;
+  }).join("");
+
+  return html;
+}
+
+async function openDocById(id){
+  closeMenus();
+  await window.App.state.setActiveDoc(id);
+  window.App.tabs.render();
 }
 
 function run(c){
   closeMenus();
 
-  if (c === "new"){
-    if (confirm("Создать новый документ?")){
-      const old = snapshot();
-      window.App.state.history.push(old);
-      St().title = "";
-      St().blocks = [U.block("text", "")];
-      St().selectedId = null;
-      St().selectedRange = null;
-      render();
-      focusActive();
-      save();
+  if (c === "doc:new")       { window.App.sidebar?.createNewDocument(); return; }
+  if (c === "doc:newTemplate"){ window.App.sidebar?.createFromTemplate(); return; }
+  if (c === "doc:open")      { openPalette("docs"); return; }
+  if (c === "lock:now"){ window.App.lock?.lock?.(); return; }
+  if (c === "doc:saveAsTemplate"){
+    const doc = getActiveDoc();
+    if (doc) window.App.sidebar?.saveCurrentAsTemplate(doc.id);
+    return;
+  }
+  if (c === "doc:importTemplate"){
+    window.App.sidebar?.importTemplateDialog();
+    return;
+  }
+  if (c === "doc:exportTemplates"){
+    window.App.sidebar?.exportAllTemplates();
+    return;
+  }
+
+  if (c === "doc:rename"){
+    const doc = getActiveDoc();
+    if (doc){
+      const name = prompt("Новое название:", doc.title || "");
+      if (name !== null){
+        window.App.state.renameDocument(doc.id, name);
+        window.App.tabs?.render();
+        window.App.sidebar?.render();
+      }
     }
+    return;
   }
-  else if (c === "save")  { saveNow(); toast("Сохранено"); }
-  else if (c === "export"){ window.App.io.downloadHTML(); }
-  else if (c === "md")    { window.App.io.downloadMD(); }
-  else if (c === "print") { print(); }
-  else if (c.startsWith("theme:")){
-    const old = snapshot();
-    St().theme = c.slice(6);
-    commit(old);
-    render();
+
+  if (c === "doc:duplicate"){
+    const doc = getActiveDoc();
+    if (doc){
+      window.App.state.duplicateDocument(doc.id).then(() => {
+        window.App.sidebar?.render();
+        toast("Дубликат создан");
+      });
+    }
+    return;
   }
-  else if (c.startsWith("font:")){
+
+  if (c === "doc:props"){
+    const doc = getActiveDoc();
+    if (doc) window.App.sidebar?.openProperties(doc.id);
+    return;
+  }
+
+  if (c === "doc:trash"){
+    const doc = getActiveDoc();
+    if (doc){
+      window.App.state.trashDocument(doc.id).then(() => {
+        window.App.sidebar?.render();
+        window.App.tabs?.render();
+        toast("В корзине");
+      });
+    }
+    return;
+  }
+
+  if (c === "doc:emptyTrash"){
+    if (!confirm("Удалить все документы из корзины безвозвратно?")) return;
+    window.App.state.emptyTrash().then(n => {
+      window.App.sidebar?.render();
+      toast(`Удалено: ${n}`);
+    });
+    return;
+  }
+
+  if (c.startsWith("block:")){
+    const type = c.slice(6);
+
+    if (type === "delete"){
+      const ev = new KeyboardEvent("keydown", {
+        key: "Backspace",
+        ctrlKey: true,
+        metaKey: true,
+        bubbles: true,
+        cancelable: true
+      });
+      (document.activeElement || document.body).dispatchEvent(ev);
+      return;
+    }
+
+    if (["text","h1","h2","todo","table","columns","divider","image"].includes(type)){
+      if (type === "image") window.App.io.openImagePicker();
+      else add(type);
+    }
+    return;
+  }
+
+  if (c.startsWith("fmt:")){
+    const cmd = c.slice(4);
+    if (cmd === "clear"){
+      document.execCommand("removeFormat", false, null);
+      document.execCommand("unlink", false, null);
+    } else if (cmd === "bullets"){
+      toggleListForSelection("ul");
+    } else if (cmd === "numbered"){
+      toggleListForSelection("ol");
+    } else {
+      document.execCommand(cmd, false, null);
+    }
+    return;
+  }
+
+  if (c === "file:save")       { saveNow(); toast("Сохранено"); return; }
+  if (c === "file:exportHTML") { window.App.io.downloadHTML(St().activeDocId); return; }
+  if (c === "file:exportMD")   { window.App.io.downloadMD(St().activeDocId); return; }
+  if (c === "file:exportJSON") { window.App.io.downloadJSON(St().activeDocId); return; }
+  if (c === "file:exportPDF")  { window.App.io.downloadPDF(St().activeDocId); return; }
+  if (c === "file:exportAll")  { window.App.io.downloadAllAsZip("html"); return; }
+  if (c === "file:import")     { window.App.io.openImportPicker(); return; }
+  if (c === "file:print")      { print(); return; }
+
+  if (c === "data:reset"){
+    if (!confirm("Удалить ВСЕ документы, папки и настройки?")) return;
+    if (!confirm("Это действие необратимо. Продолжить?")) return;
+    window.App.db.clearAll().then(() => {
+      try { localStorage.clear(); } catch(e){}
+      location.reload();
+    });
+    return;
+  }
+
+  if (c === "nav:search")      { openGlobalSearch(); return; }
+  if (c === "nav:nextDoc")     { window.App.tabs?.nextTab(); return; }
+  if (c === "nav:prevDoc")     { window.App.tabs?.prevTab(); return; }
+  if (c === "nav:toggleSidebar"){ window.App.sidebar?.toggleSidebar(); return; }
+
+  if (c.startsWith("font:")){
     const parts = c.split(":");
     const role = parts[1];
     const name = parts.slice(2).join(":");
@@ -221,20 +544,106 @@ function run(c){
 
     document.documentElement.style.setProperty(cssVar, `'${name}', ${fallback}`);
 
-    if (!St().fonts) St().fonts = {};
-    St().fonts[role] = name;
+    if (!St().fonts) St().ui.fonts = {};
+    St().ui.fonts[role] = name;
+    window.App.state.setUI("fonts", St().ui.fonts);
     save();
     toast(`Шрифт: ${name}`);
+    return;
   }
-  else if (c === "image"){ window.App.io.openImagePicker(); }
-  else if (["text","h1","h2","todo","table","columns","divider"].includes(c)){
-    add(c);
+
+  if (c.startsWith("theme:")){
+    const old = snapshot();
+    window.App.state.setUI("theme", c.slice(6));
+    commit(old);
+    render();
+    return;
   }
 }
 
-/* ============================================================
-   Списки: работа на уровне блоков
-   ============================================================ */
+/* ---------- Глобальный поиск по содержимому ---------- */
+
+function openGlobalSearch(){
+  const p = $("#palette");
+  const b = $("#backdrop");
+  if (!p) return;
+
+  p.style.display = "block";
+  if (b) b.style.display = "block";
+
+  const inp = $("#cmdinput");
+  if (inp){
+    inp.value = "# ";
+    inp.placeholder = "Поиск по всем документам…";
+  }
+  paletteMode = "search";
+  cmdIndex = 0;
+  lastCmdLen = -1;
+  globalSearchRender("");
+  inp?.focus();
+}
+
+function globalSearchRender(q){
+  const query = q.toLowerCase().trim();
+  const res = $("#cmdresults");
+  if (!res) return;
+
+  if (!query){
+    res.innerHTML = `<div class="results-group">Введите запрос</div>`;
+    return;
+  }
+
+  const hits = [];
+  for (const id of Object.keys(St().documents)){
+    const doc = St().documents[id];
+    if (doc.trashed) continue;
+
+    if ((doc.title || "").toLowerCase().includes(query) ||
+        (doc.description || "").toLowerCase().includes(query)){
+      hits.push({ doc, snippet: doc.title });
+      continue;
+    }
+
+    for (const b of doc.blocks || []){
+      const text = htmlToText(b.content || "");
+      if (text.toLowerCase().includes(query)){
+        const idx = text.toLowerCase().indexOf(query);
+        const snippet = text.slice(Math.max(0, idx - 30), idx + 60);
+        hits.push({ doc, snippet });
+        break;
+      }
+    }
+
+    if (hits.length >= 40) break;
+  }
+
+  if (!hits.length){
+    res.innerHTML = `<div class="results-empty">Ничего не найдено</div>`;
+    return;
+  }
+
+  let html = `<div class="results-group">Найдено: ${hits.length}</div>`;
+  html += hits.map((h, i) => {
+    const sel = i === cmdIndex ? "sel" : "";
+    const title = escape(h.doc.title || "Без названия");
+    const sn = escape(h.snippet || "").replace(new RegExp(query,"ig"), m => `<mark>${m}</mark>`);
+    return `<div class="result ${sel}" data-doc="${h.doc.id}">
+      <b>${title}</b>
+      <small>${sn}</small>
+    </div>`;
+  }).join("");
+
+  res.innerHTML = html;
+
+  $$("#cmdresults .result").forEach(el => {
+    el.onclick = () => {
+      const id = el.dataset.doc;
+      if (id) openDocById(id);
+    };
+  });
+}
+
+/* ---------- Списки: работа на уровне блоков ---------- */
 
 function getSelectedBlockRange(){
   const sel = getSelection();
@@ -615,13 +1024,11 @@ function toggleMarkerMenu(anchor){
     return;
   }
 
-  const r = anchor.getBoundingClientRect();
-  const w = 7 * 34 + 10;
-  const left = Math.min(r.left, window.innerWidth - w - 8);
-  const top  = r.bottom + 6;
-  menu.style.left = left + "px";
-  menu.style.top  = top + "px";
+  menu.dataset.display = "flex";
   menu.style.display = "flex";
+
+  const r = anchor.getBoundingClientRect();
+  U.positionFloating(menu, r, { preferBelow: true, gap: 6, margin: 8 });
 
   menu.querySelectorAll("button").forEach(btn => {
     btn.classList.remove("on");
@@ -648,16 +1055,13 @@ const FONT_LIST = [
   { group: "Основной",  name: "Inter",            tag: "sans" },
   { group: "Основной",  name: "Open Sans",        tag: "sans" },
   { group: "Основной",  name: "Plus Jakarta Sans", tag: "sans" },
-
   { group: "Заголовки", name: "Montserrat",        tag: "head" },
   { group: "Заголовки", name: "Manrope",           tag: "head" },
   { group: "Заголовки", name: "Outfit",            tag: "head" },
-  { group: "Заголовки", name: "Inter",            tag: "head" },
-
+  { group: "Заголовки", name: "Inter",             tag: "head" },
   { group: "Serif",     name: "Lora",              tag: "serif" },
   { group: "Serif",     name: "PT Serif",          tag: "serif" },
   { group: "Serif",     name: "Merriweather",      tag: "serif" },
-
   { group: "Mono",      name: "JetBrains Mono",    tag: "mono" },
   { group: "Mono",      name: "Fira Code",         tag: "mono" }
 ];
@@ -667,14 +1071,11 @@ function openFontMenu(anchor){
   const input = $("#fontmenu-input");
   if (!menu || !input) return;
 
-  const r = anchor.getBoundingClientRect();
-  const w = 230;
-  const left = Math.min(r.left, window.innerWidth - w - 8);
-  const top = r.bottom + 6;
-
-  menu.style.left = left + "px";
-  menu.style.top = top + "px";
+  menu.dataset.display = "block";
   menu.style.display = "block";
+
+  const r = anchor.getBoundingClientRect();
+  U.positionFloating(menu, r, { preferBelow: true, gap: 6, margin: 8 });
 
   input.value = "";
   fontMenuRender("");
@@ -740,7 +1141,99 @@ function applyFontToSelection(name){
   toast(`Шрифт: ${name}`);
 }
 
-/* ---------- Handle menu ---------- */
+/* ============================================================
+   Handle menu
+   ============================================================ */
+
+/* ПАТЧ 2.2: заполняет ID-строку и настраивает bind (один раз) */
+function fillIdSection(b){
+  const idValue = document.getElementById("hm-id-value");
+  const idInput = document.getElementById("hm-id-input");
+  if (!idValue || !idInput) return;
+
+  idValue.textContent = b.customId || b.id;
+  idValue.hidden = false;
+  idInput.hidden = true;
+  idInput.value = "";
+}
+
+function bindIdInputOnce(){
+  const idInput = document.getElementById("hm-id-input");
+  const idValue = document.getElementById("hm-id-value");
+  if (!idInput || idInput.dataset.bound) return;
+  idInput.dataset.bound = "1";
+
+  const commitId = () => {
+    const b = St().blocks.find(x => x.id === handleMenuBlock);
+    if (!b) return;
+
+    const raw = String(idInput.value || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9\-_]/g, "")
+      .slice(0, 64);
+
+    /* Пусто или равен id → сбрасываем customId */
+    if (!raw || raw === b.id){
+      const old = snapshot();
+      b.customId = "";
+      commit(old);
+      render();
+      setSelectedBlock(b.id);
+      idValue.textContent = b.id;
+      return;
+    }
+
+    /* Проверка уникальности в документе */
+    const doc = getActiveDoc();
+    const dup = doc?.blocks.find(x =>
+      x.id !== b.id && (x.customId === raw || x.id === raw)
+    );
+
+    let finalId = raw;
+    if (dup){
+      let n = 2;
+      while (doc.blocks.some(x =>
+        x.id !== b.id && (x.customId === `${raw}-${n}` || x.id === `${raw}-${n}`)
+      )){
+        n++;
+      }
+      finalId = `${raw}-${n}`;
+      toast(`ID занят, использован #${finalId}`);
+    }
+
+    const old = snapshot();
+    b.customId = finalId;
+    commit(old);
+    render();
+    setSelectedBlock(b.id);
+    idValue.textContent = finalId;
+  };
+
+  idInput.addEventListener("keydown", (e) => {
+    e.stopPropagation();
+    if (e.key === "Enter"){
+      e.preventDefault();
+      commitId();
+      idInput.hidden = true;
+      idValue.hidden = false;
+    } else if (e.key === "Escape"){
+      e.preventDefault();
+      idInput.hidden = true;
+      idValue.hidden = false;
+      const b = St().blocks.find(x => x.id === handleMenuBlock);
+      if (b) idValue.textContent = b.customId || b.id;
+    }
+  });
+
+  idInput.addEventListener("blur", () => {
+    if (!idInput.hidden){
+      commitId();
+      idInput.hidden = true;
+      idValue.hidden = false;
+    }
+  });
+}
 
 function openHandleMenu(anchor, blockId){
   const menu = $("#handlemenu");
@@ -748,29 +1241,27 @@ function openHandleMenu(anchor, blockId){
 
   handleMenuBlock = blockId;
 
-  /* секция маркеров — всегда видна, только кнопки не подсвечены,
-     если блок не ul/text. Так не прыгает высота меню. */
+  const b = St().blocks.find(x => x.id === blockId);
+
+  /* Секция маркера списка — только для ul */
   const markerSection = menu.querySelector('[data-section="marker"]');
-  if (markerSection) markerSection.hidden = false;
+  if (markerSection) markerSection.hidden = (b?.type !== "ul");
 
-  /* измеряем высоту до показа — чтобы правильно спозиционировать */
-  menu.style.visibility = "hidden";
-  menu.style.display = "block";
-  const mh = menu.offsetHeight;
-  const mw = menu.offsetWidth || 280;
-
-  const r = anchor.getBoundingClientRect();
-  const left = Math.min(r.left + 24, window.innerWidth - mw - 8);
-
-  const margin = 8;
-  let top = r.top + 4;
-  if (top + mh > window.innerHeight - margin){
-    top = Math.max(margin, window.innerHeight - mh - margin);
+  /* ПАТЧ 2.1: секция колонок */
+  const colsSection = menu.querySelector('[data-section="columns"]');
+  if (colsSection){
+    colsSection.hidden = (b?.type !== "columns");
+    if (b?.type === "columns") fillColsRatioButtons(colsSection, b);
   }
 
-  menu.style.left = left + "px";
-  menu.style.top  = top + "px";
-  menu.style.visibility = "visible";
+  /* ПАТЧ 2.2: ID-секция */
+  if (b) fillIdSection(b);
+
+  menu.dataset.display = "block";
+  menu.style.display = "block";
+
+  const r = anchor.getBoundingClientRect();
+  U.positionFloating(menu, r, { preferBelow: true, gap: 6, margin: 8 });
 
   syncHandleMenuState();
   handleMenuOpen = true;
@@ -779,8 +1270,62 @@ function openHandleMenu(anchor, blockId){
 function closeHandleMenu(){
   const menu = $("#handlemenu");
   if (menu) menu.style.display = "none";
+
+  /* ПАТЧ 2.2: сброс ID-инпута */
+  const idInput = document.getElementById("hm-id-input");
+  const idValue = document.getElementById("hm-id-value");
+  if (idInput && idValue){
+    idInput.hidden = true;
+    idValue.hidden = false;
+  }
+
   handleMenuOpen = false;
   handleMenuBlock = null;
+}
+
+/* ПАТЧ 2.1: динамически заполняет кнопки-пресеты пропорций */
+function fillColsRatioButtons(section, b){
+  if (!section) return;
+  const row = section.querySelector('[data-group="cols-ratio"]');
+  if (!row) return;
+  row.innerHTML = "";
+
+  const presets = {
+    2: [
+      { label: "1:1", w: [1,1] },
+      { label: "2:1", w: [2,1] },
+      { label: "1:2", w: [1,2] },
+      { label: "3:1", w: [3,1] }
+    ],
+    3: [
+      { label: "1:1:1", w: [1,1,1] },
+      { label: "2:1:1", w: [2,1,1] },
+      { label: "1:2:1", w: [1,2,1] },
+      { label: "1:1:2", w: [1,1,2] }
+    ],
+    4: [
+      { label: "1:1:1:1", w: [1,1,1,1] }
+    ]
+  };
+
+  const arr = presets[b.cols] || presets[2];
+  arr.forEach(p => {
+    const btn = document.createElement("button");
+    btn.dataset.val = JSON.stringify(p.w);
+    btn.textContent = p.label;
+    btn.style.fontFamily = "var(--font-mono-current)";
+    btn.style.fontSize = "11.5px";
+
+    const sum = p.w.reduce((a,x)=>a+x,0) || 1;
+    const cur = b.widths || [];
+    const sumCur = cur.reduce((a,x)=>a+x,0) || 1;
+    const same = cur.length === p.w.length &&
+      p.w.every((w, i) => Math.abs(w/sum - cur[i]/sumCur) < 0.03);
+    if (same) btn.classList.add("on");
+
+    btn.onmousedown = e => e.preventDefault();
+    row.append(btn);
+  });
 }
 
 function syncHandleMenuState(){
@@ -801,6 +1346,12 @@ function syncHandleMenuState(){
       if (group === "font")   on = ((b.font || "") === val);
       if (group === "indent") on = (String(b.indent || 0) === val);
       if (group === "marker") on = ((b.marker || "disc") === val);
+      /* ПАТЧ 2.1 */
+      if (group === "cols-count")  on = (String(b.cols) === val);
+      if (group === "cols-valign") on = ((b.valign || "top") === val);
+      if (group === "cols-gap")    on = (String(b.gap ?? 14) === val);
+      /* ПАТЧ 2.2 */
+      if (group === "blockMarker") on = ((b.blockMarker || "") === val);
 
       btn.classList.toggle("on", on);
     });
@@ -810,35 +1361,66 @@ function syncHandleMenuState(){
 /* ---------- Bind UI ---------- */
 
 function bindMenus(){
-  $("#slashinput").oninput = slashRender;
-  $("#slashinput").onkeydown = e => {
-    if (e.key === "Escape") { setSlashBlockId(null); closeMenus(); }
-    if (e.key === "Enter")  $$("#slashresults .result")[0]?.click();
-  };
+  const slashInput = $("#slashinput");
+  if (slashInput){
+    slashInput.oninput = slashRender;
+    slashInput.onkeydown = e => {
+      if (e.key === "Escape"){ setSlashBlockId(null); closeMenus(); }
+      if (e.key === "Enter") $$("#slashresults .result")[0]?.click();
+    };
+  }
 
-  $("#cmdinput").oninput = cmdRender;
-  $("#cmdinput").onkeydown = e => {
-    const items = $$("#cmdresults .result");
-    const n = items.length;
-    if (e.key === "ArrowDown"){
-      e.preventDefault();
-      if (!n) return;
-      cmdIndex = (cmdIndex + 1) % n;
+  const cmdInput = $("#cmdinput");
+  if (cmdInput){
+    cmdInput.oninput = () => {
+      const raw = cmdInput.value;
+      const mode = detectMode(raw);
+      if (paletteMode === "search" || mode === "docs"){
+        globalSearchRender(stripPrefix(raw));
+      } else {
+        cmdIndex = 0;
+        cmdRender();
+      }
+    };
+
+    cmdInput.onkeydown = e => {
+      const items = $$("#cmdresults .result");
+      const n = items.length;
+
+      if (e.key === "ArrowDown"){
+        e.preventDefault();
+        if (!n) return;
+        cmdIndex = (cmdIndex + 1) % n;
+        rerenderPalette();
+      } else if (e.key === "ArrowUp"){
+        e.preventDefault();
+        if (!n) return;
+        cmdIndex = (cmdIndex + n - 1) % n;
+        rerenderPalette();
+      } else if (e.key === "Enter"){
+        e.preventDefault();
+        if (!n) return;
+        items[Math.min(cmdIndex, n - 1)]?.click();
+      } else if (e.key === "Escape"){
+        closeMenus();
+      }
+    };
+  }
+
+  function rerenderPalette(){
+    const raw = cmdInput.value;
+    const mode = detectMode(raw);
+    if (paletteMode === "search" || mode === "docs"){
+      globalSearchRender(stripPrefix(raw));
+    } else {
       cmdRender();
-    } else if (e.key === "ArrowUp"){
-      e.preventDefault();
-      if (!n) return;
-      cmdIndex = (cmdIndex + n - 1) % n;
-      cmdRender();
-    } else if (e.key === "Enter"){
-      if (!n) return;
-      items[Math.min(cmdIndex, n - 1)]?.click();
-    } else if (e.key === "Escape"){
-      closeMenus();
     }
-  };
+    const items = $$("#cmdresults .result");
+    items.forEach((el, i) => el.classList.toggle("sel", i === cmdIndex));
+  }
 
-  $("#backdrop").onclick = closeMenus;
+  const backdrop = $("#backdrop");
+  if (backdrop) backdrop.onclick = closeMenus;
 
   const fontInput = $("#fontmenu-input");
   if (fontInput){
@@ -852,10 +1434,15 @@ function bindMenus(){
     });
   }
 
+  /* ПАТЧ 2.2: ID-input — bind один раз */
+  bindIdInputOnce();
+
   const handleMenu = $("#handlemenu");
   if (handleMenu){
     handleMenu.addEventListener("mousedown", e => {
-      if (e.target.closest("[data-group] button, .hm-actions button")) e.preventDefault();
+      if (e.target.closest("[data-group] button, .hm-actions button, .hm-id-btn, .hm-inline-btn, .hm-input-inline, .hm-id-input")) {
+        e.preventDefault();
+      }
     });
 
     handleMenu.addEventListener("click", e => {
@@ -864,10 +1451,66 @@ function bindMenus(){
       const b = St().blocks.find(x => x.id === handleMenuBlock);
       if (!b) return;
 
+      /* ============================================================
+         ПАТЧ 2.2: обработчики ID
+         ============================================================ */
+      if (btn.dataset.action === "copy-id"){
+        const id = b.customId || b.id;
+        navigator.clipboard.writeText(id).then(
+          () => toast("ID скопирован: " + id),
+          () => toast("Не удалось скопировать")
+        );
+        return;
+      }
+
+      if (btn.dataset.action === "copy-link"){
+        const doc = getActiveDoc();
+        const id = b.customId || b.id;
+        const title = doc?.title || "Без названия";
+        const link = `[[${title}#${id}]]`;
+        navigator.clipboard.writeText(link).then(
+          () => toast("Ссылка скопирована"),
+          () => toast("Не удалось скопировать")
+        );
+        return;
+      }
+
+      if (btn.dataset.action === "edit-id"){
+        const idValue = document.getElementById("hm-id-value");
+        const idInput = document.getElementById("hm-id-input");
+        if (!idValue || !idInput) return;
+        idInput.value = b.customId || b.id;
+        idValue.hidden = true;
+        idInput.hidden = false;
+        idInput.focus();
+        idInput.select();
+        return;
+      }
+
+      /* ============================================================
+         ПАТЧ 2.2: применение кастомного маркера из инпута
+         ============================================================ */
+      if (btn.dataset.action === "apply-custom-marker"){
+        const inp = document.getElementById("hm-blockMarker-custom");
+        if (!inp) return;
+        const val = String(inp.value || "").trim().slice(0, 2);
+        const old = snapshot();
+        b.blockMarker = val;
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        syncHandleMenuState();
+        inp.value = "";
+        return;
+      }
+
+      /* Стандартные действия */
       if (btn.dataset.action === "duplicate"){
         const old = snapshot();
         const copy = JSON.parse(JSON.stringify(b));
         copy.id = uid();
+        /* ПАТЧ 2.2: сбрасываем customId, чтобы не было дубликата */
+        copy.customId = "";
         const i = St().blocks.findIndex(x => x.id === b.id);
         St().blocks.splice(i + 1, 0, copy);
         commit(old);
@@ -894,6 +1537,75 @@ function bindMenus(){
       const group = groupContainer.dataset.group;
       const val   = btn.dataset.val;
 
+      /* ПАТЧ 2.1: настройки колонок */
+      if (group === "cols-count"){
+        const n = parseInt(val, 10);
+        if (![2,3,4].includes(n)) return;
+        const old = snapshot();
+        b.cols = n;
+        const arr = Array.isArray(b.content) ? b.content.slice(0, n) : [];
+        while (arr.length < n) arr.push("");
+        b.content = arr;
+        const w = Array.isArray(b.widths) ? b.widths.slice(0, n) : [];
+        while (w.length < n) w.push(1);
+        const sum = w.reduce((a,x)=>a+x,0) || 1;
+        b.widths = w.map(x => x / sum);
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        fillColsRatioButtons(handleMenu.querySelector('[data-section="columns"]'), b);
+        syncHandleMenuState();
+        return;
+      }
+
+      if (group === "cols-ratio"){
+        let w;
+        try { w = JSON.parse(val); } catch(e){ return; }
+        if (!Array.isArray(w) || w.length !== b.cols) return;
+        const old = snapshot();
+        const sum = w.reduce((a,x)=>a+x,0) || 1;
+        b.widths = w.map(x => x / sum);
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        fillColsRatioButtons(handleMenu.querySelector('[data-section="columns"]'), b);
+        syncHandleMenuState();
+        return;
+      }
+
+      if (group === "cols-valign"){
+        const old = snapshot();
+        b.valign = val;
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        syncHandleMenuState();
+        return;
+      }
+
+      if (group === "cols-gap"){
+        const old = snapshot();
+        b.gap = parseInt(val, 10) || 0;
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        syncHandleMenuState();
+        return;
+      }
+
+      /* ============================================================
+         ПАТЧ 2.2: маркер блока (для любого типа)
+         ============================================================ */
+      if (group === "blockMarker"){
+        const old = snapshot();
+        b.blockMarker = val || "";
+        commit(old);
+        render();
+        setSelectedBlock(b.id);
+        syncHandleMenuState();
+        return;
+      }
+
       const old = snapshot();
 
       if (group === "type"){
@@ -904,6 +1616,11 @@ function bindMenus(){
         } else if (val === "columns"){
           b.cols = b.cols || 2;
           b.content = Array.isArray(b.content) ? b.content : ["", ""];
+          if (!Array.isArray(b.widths) || b.widths.length !== b.cols){
+            b.widths = Array(b.cols).fill(1 / b.cols);
+          }
+          if (!Number.isFinite(b.gap)) b.gap = 14;
+          if (!b.valign) b.valign = "top";
         } else if (val === "ul" || val === "ol"){
           if (typeof b.content !== "string") b.content = "";
           if (!/<\/?li/i.test(b.content)) b.content = "<li><br></li>";
@@ -922,6 +1639,17 @@ function bindMenus(){
       render();
       setSelectedBlock(b.id);
       syncHandleMenuState();
+
+      /* Обновляем секции при смене типа */
+      if (group === "type"){
+        const cs = handleMenu.querySelector('[data-section="columns"]');
+        if (cs){
+          cs.hidden = (val !== "columns");
+          if (val === "columns") fillColsRatioButtons(cs, b);
+        }
+        const ms = handleMenu.querySelector('[data-section="marker"]');
+        if (ms) ms.hidden = (val !== "ul");
+      }
     });
   }
 
@@ -948,14 +1676,12 @@ function bindMenus(){
         closeFontMenu();
       }
     }
-
     if (handleMenuOpen){
       if (!e.target.closest("#handlemenu") &&
           !e.target.closest(".handle")){
         closeHandleMenu();
       }
     }
-
     if (markerMenuOpen){
       if (!e.target.closest("#markermenu") &&
           !e.target.closest('.floatbar button[data-cmd="bullets"]')){
@@ -969,7 +1695,6 @@ function bindMenus(){
     if (e.target.closest("#fontmenu"))   return;
     if (e.target.closest("#handlemenu")) return;
     if (e.target.closest("#markermenu")) return;
-
     if (e.target.closest(".block"))      return;
     if (e.target.closest("header"))      return;
     if (e.target.closest(".title"))      return;
@@ -978,107 +1703,136 @@ function bindMenus(){
   });
 
   document.addEventListener("selectionchange", () => {
-  /* пока взаимодействуем с floatbar — не прячем и не двигаем */
-  if (floatbarDragging) return;
+    if (floatbarDragging) return;
 
-  const s = getSelection();
-
-  /* нет выделения — прячем */
-  if (!s.rangeCount || s.isCollapsed){
-    $("#floatbar").style.display = "none";
-    clearSelectedRange();
-    return;
-  }
-
-  const anchorEl = s.anchorNode?.parentElement;
-  const insideEditor = anchorEl?.closest(".editor");
-
-  /* выделение вне редактора — прячем */
-  if (!insideEditor){
-    $("#floatbar").style.display = "none";
-    clearSelectedRange();
-    return;
-  }
-
-  /* диапазон блоков под выделением */
-  const els = getSelectedBlockRange();
-  if (els.length){
-    const ids = els.map(w => w.dataset.id);
-    const ordered = St().blocks.filter(b => ids.includes(b.id)).map(b => b.id);
-    if (ordered.length){
-      setSelectedRange(ordered[0], ordered[ordered.length - 1]);
-    }
-  } else {
-    clearSelectedRange();
-  }
-
-  /* позиция — над первой строкой выделения */
-  const range = s.getRangeAt(0);
-  const rects = range.getClientRects();
-  const rect = rects && rects.length ? rects[0] : range.getBoundingClientRect();
-
-  if (!rect || (!rect.width && !rect.height)){
-    $("#floatbar").style.display = "none";
-    return;
-  }
-
-  const f = $("#floatbar");
-  f.style.left = Math.max(8, rect.left) + "px";
-  f.style.top  = Math.max(65, rect.top - 46) + "px";
-  f.style.display = "flex";
-
-  updateFloatbarState();
-});
-
-  document.addEventListener("keydown", e => {
-    const ctrl = e.ctrlKey || e.metaKey;
-    const key = e.key.toLowerCase();
-
-    if (ctrl && e.shiftKey && key === "7"){
-      e.preventDefault();
-      applyOlToSelection();
+    const s = getSelection();
+    if (!s.rangeCount || s.isCollapsed){
+      $("#floatbar").style.display = "none";
+      clearSelectedRange();
       return;
     }
-    if (ctrl && e.shiftKey && key === "8"){
-      e.preventDefault();
-      const els = getSelectedBlockRange();
-      const targets = els.length
-        ? els
-        : (() => {
-            const b = getActiveBlockForToolbar();
-            return b ? [$( `[data-id="${b.id}"]`)].filter(Boolean) : [];
-          })();
-      if (!targets.length) return;
-      const ids = targets.map(w => w.dataset.id);
-      const blocks = St().blocks.filter(b => ids.includes(b.id));
+    const anchorEl = s.anchorNode?.parentElement;
+    if (!anchorEl?.closest(".editor")){
+      $("#floatbar").style.display = "none";
+      clearSelectedRange();
+      return;
+    }
+
+    const els = getSelectedBlockRange();
+    if (els.length){
+      const ids = els.map(w => w.dataset.id);
+      const ordered = St().blocks.filter(b => ids.includes(b.id)).map(b => b.id);
+      if (ordered.length){
+        setSelectedRange(ordered[0], ordered[ordered.length - 1]);
+      }
+    } else {
+      clearSelectedRange();
+    }
+
+    const range = s.getRangeAt(0);
+    const rects = range.getClientRects();
+    const rect = rects && rects.length ? rects[0] : range.getBoundingClientRect();
+    if (!rect || (!rect.width && !rect.height)){
+      $("#floatbar").style.display = "none";
+      return;
+    }
+
+    const f = $("#floatbar");
+    f.dataset.display = "flex";
+    f.style.display = "flex";
+
+    const anchorRect = {
+      left:  rect.left,
+      right: rect.right,
+      top:   rect.top,
+      bottom:rect.top - 4,
+      width: rect.width,
+      height: 0
+    };
+
+    U.positionFloating(f, anchorRect, {
+      preferBelow: false,
+      gap: 8,
+      margin: 8
+    });
+
+    updateFloatbarState();
+  });
+
+  /* ПАТЧ 1: mod+Backspace — удаление блока(ов). */
+  document.addEventListener("keydown", e => {
+    const isMod = e.ctrlKey || e.metaKey;
+    if (!isMod || e.key !== "Backspace") return;
+
+    const ae = document.activeElement;
+    if (!ae) return;
+    const inEditor = ae.isContentEditable && ae.closest?.("#editor");
+    if (!inEditor) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    const blocks = St().blocks;
+    const els = getSelectedBlockRange();
+    let ids = [];
+
+    if (els.length){
+      ids = els.map(w => w.dataset.id);
+    } else {
+      const b = getBlockUnderCaret();
+      if (b) ids = [b.id];
+    }
+    if (!ids.length) return;
+
+    if (blocks.length - ids.length < 1){
+      const keep = blocks.find(b => !ids.includes(b.id)) || blocks[0];
       const old = snapshot();
-      blocks.forEach(b => {
-        if (b.type === "ul" || b.type === "ol") splitListBlock(b);
-      });
+      blocks.length = 0;
+      if (keep){
+        keep.content = "";
+        keep.type = "text";
+        keep.checked = false;
+        keep.rows = null;
+        keep.cols = null;
+        blocks.push(keep);
+      } else {
+        blocks.push(U.block("text", ""));
+      }
+      setActive(blocks[0].id);
+      setSelectedBlock(blocks[0].id);
       commit(old);
       render();
+      setTimeout(() => focusActive(), 0);
       return;
     }
 
-    if (ctrl && key === "k"){ e.preventDefault(); openPalette(); }
-    if (ctrl && key === "z"){
-      e.preventDefault();
-      e.shiftKey ? redo() : undo();
-    }
-    if (ctrl && key === "y"){ e.preventDefault(); redo(); }
-    if (ctrl && key === "f"){ e.preventDefault(); $("#find").focus(); }
-    if (e.key === "Escape"){
-      if (markerMenuOpen)      closeMarkerMenu();
-      else if (fontMenuOpen)   closeFontMenu();
-      else if (handleMenuOpen) closeHandleMenu();
-      else                     closeMenus();
-    }
+    const old = snapshot();
+    const firstIdx = blocks.findIndex(b => ids.includes(b.id));
+    const remaining = blocks.filter(b => !ids.includes(b.id));
+    blocks.length = 0;
+    blocks.push(...remaining);
+
+    const nextId = remaining[Math.min(firstIdx, remaining.length - 1)]?.id || null;
+    setActive(nextId);
+    setSelectedBlock(nextId);
+    commit(old);
+    render();
+    setTimeout(() => focusActive(), 0);
+  });
+
+  document.addEventListener("keydown", e => {
+    if (e.key !== "Escape") return;
+    if (markerMenuOpen)      closeMarkerMenu();
+    else if (fontMenuOpen)   closeFontMenu();
+    else if (handleMenuOpen) closeHandleMenu();
+    else                     closeMenus();
   });
 }
 
 return {
   openSlash, slashRender, slashChoose,
   openPalette, closeMenus, cmdRender, run,
+  openGlobalSearch,
   openFontMenu, closeFontMenu,
   openHandleMenu, closeHandleMenu,
   bindFloatbar, bindMenus,
