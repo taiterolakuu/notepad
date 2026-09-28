@@ -1145,7 +1145,7 @@ function applyFontToSelection(name){
    Handle menu
    ============================================================ */
 
-/* ПАТЧ 2.2: заполняет ID-строку и настраивает bind (один раз) */
+/* ПАТЧ 2.2: заполняет ID-строку */
 function fillIdSection(b){
   const idValue = document.getElementById("hm-id-value");
   const idInput = document.getElementById("hm-id-input");
@@ -1173,7 +1173,6 @@ function bindIdInputOnce(){
       .replace(/[^a-z0-9\-_]/g, "")
       .slice(0, 64);
 
-    /* Пусто или равен id → сбрасываем customId */
     if (!raw || raw === b.id){
       const old = snapshot();
       b.customId = "";
@@ -1184,7 +1183,6 @@ function bindIdInputOnce(){
       return;
     }
 
-    /* Проверка уникальности в документе */
     const doc = getActiveDoc();
     const dup = doc?.blocks.find(x =>
       x.id !== b.id && (x.customId === raw || x.id === raw)
@@ -1243,18 +1241,15 @@ function openHandleMenu(anchor, blockId){
 
   const b = St().blocks.find(x => x.id === blockId);
 
-  /* Секция маркера списка — только для ul */
   const markerSection = menu.querySelector('[data-section="marker"]');
   if (markerSection) markerSection.hidden = (b?.type !== "ul");
 
-  /* ПАТЧ 2.1: секция колонок */
   const colsSection = menu.querySelector('[data-section="columns"]');
   if (colsSection){
     colsSection.hidden = (b?.type !== "columns");
     if (b?.type === "columns") fillColsRatioButtons(colsSection, b);
   }
 
-  /* ПАТЧ 2.2: ID-секция */
   if (b) fillIdSection(b);
 
   menu.dataset.display = "block";
@@ -1271,7 +1266,6 @@ function closeHandleMenu(){
   const menu = $("#handlemenu");
   if (menu) menu.style.display = "none";
 
-  /* ПАТЧ 2.2: сброс ID-инпута */
   const idInput = document.getElementById("hm-id-input");
   const idValue = document.getElementById("hm-id-value");
   if (idInput && idValue){
@@ -1283,7 +1277,6 @@ function closeHandleMenu(){
   handleMenuBlock = null;
 }
 
-/* ПАТЧ 2.1: динамически заполняет кнопки-пресеты пропорций */
 function fillColsRatioButtons(section, b){
   if (!section) return;
   const row = section.querySelector('[data-group="cols-ratio"]');
@@ -1350,8 +1343,7 @@ function syncHandleMenuState(){
       if (group === "cols-count")  on = (String(b.cols) === val);
       if (group === "cols-valign") on = ((b.valign || "top") === val);
       if (group === "cols-gap")    on = (String(b.gap ?? 14) === val);
-      /* ПАТЧ 2.2 */
-      if (group === "blockMarker") on = ((b.blockMarker || "") === val);
+      /* ПАТЧ 2.3.0: убрано blockMarker */
 
       btn.classList.toggle("on", on);
     });
@@ -1434,13 +1426,13 @@ function bindMenus(){
     });
   }
 
-  /* ПАТЧ 2.2: ID-input — bind один раз */
   bindIdInputOnce();
 
   const handleMenu = $("#handlemenu");
   if (handleMenu){
+    /* ПАТЧ 2.3.0: убраны .hm-inline-btn, .hm-input-inline из селектора */
     handleMenu.addEventListener("mousedown", e => {
-      if (e.target.closest("[data-group] button, .hm-actions button, .hm-id-btn, .hm-inline-btn, .hm-input-inline, .hm-id-input")) {
+      if (e.target.closest("[data-group] button, .hm-actions button, .hm-id-btn, .hm-id-input")) {
         e.preventDefault();
       }
     });
@@ -1451,9 +1443,6 @@ function bindMenus(){
       const b = St().blocks.find(x => x.id === handleMenuBlock);
       if (!b) return;
 
-      /* ============================================================
-         ПАТЧ 2.2: обработчики ID
-         ============================================================ */
       if (btn.dataset.action === "copy-id"){
         const id = b.customId || b.id;
         navigator.clipboard.writeText(id).then(
@@ -1487,29 +1476,12 @@ function bindMenus(){
         return;
       }
 
-      /* ============================================================
-         ПАТЧ 2.2: применение кастомного маркера из инпута
-         ============================================================ */
-      if (btn.dataset.action === "apply-custom-marker"){
-        const inp = document.getElementById("hm-blockMarker-custom");
-        if (!inp) return;
-        const val = String(inp.value || "").trim().slice(0, 2);
-        const old = snapshot();
-        b.blockMarker = val;
-        commit(old);
-        render();
-        setSelectedBlock(b.id);
-        syncHandleMenuState();
-        inp.value = "";
-        return;
-      }
+      /* ПАТЧ 2.3.0: убран apply-custom-marker */
 
-      /* Стандартные действия */
       if (btn.dataset.action === "duplicate"){
         const old = snapshot();
         const copy = JSON.parse(JSON.stringify(b));
         copy.id = uid();
-        /* ПАТЧ 2.2: сбрасываем customId, чтобы не было дубликата */
         copy.customId = "";
         const i = St().blocks.findIndex(x => x.id === b.id);
         St().blocks.splice(i + 1, 0, copy);
@@ -1537,7 +1509,6 @@ function bindMenus(){
       const group = groupContainer.dataset.group;
       const val   = btn.dataset.val;
 
-      /* ПАТЧ 2.1: настройки колонок */
       if (group === "cols-count"){
         const n = parseInt(val, 10);
         if (![2,3,4].includes(n)) return;
@@ -1593,18 +1564,7 @@ function bindMenus(){
         return;
       }
 
-      /* ============================================================
-         ПАТЧ 2.2: маркер блока (для любого типа)
-         ============================================================ */
-      if (group === "blockMarker"){
-        const old = snapshot();
-        b.blockMarker = val || "";
-        commit(old);
-        render();
-        setSelectedBlock(b.id);
-        syncHandleMenuState();
-        return;
-      }
+      /* ПАТЧ 2.3.0: убран group === "blockMarker" */
 
       const old = snapshot();
 
@@ -1640,7 +1600,6 @@ function bindMenus(){
       setSelectedBlock(b.id);
       syncHandleMenuState();
 
-      /* Обновляем секции при смене типа */
       if (group === "type"){
         const cs = handleMenu.querySelector('[data-section="columns"]');
         if (cs){
@@ -1759,7 +1718,6 @@ function bindMenus(){
     updateFloatbarState();
   });
 
-  /* ПАТЧ 1: mod+Backspace — удаление блока(ов). */
   document.addEventListener("keydown", e => {
     const isMod = e.ctrlKey || e.metaKey;
     if (!isMod || e.key !== "Backspace") return;

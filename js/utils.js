@@ -38,8 +38,7 @@ const VALID_ALIGN  = new Set(["left","center","right"]);
 const VALID_MARKER = new Set(["disc","circle","square","diamond","dot","arrow"]);
 /* ПАТЧ 2.1 */
 const VALID_VALIGN = new Set(["top","center","bottom"]);
-/* ПАТЧ 2.2 */
-const VALID_LINE_NUMBER_FORMATS = new Set(["1.","1)","#1","L1"]);
+/* ПАТЧ 2.3.0: убрано VALID_LINE_NUMBER_FORMATS */
 
 const EMOJI_PRESETS = ["📝","📔","📚","💡","⭐","✅","🎯","🍳","✈️","💼","🎨","🔬","🏠","❤️","⚡"];
 const COLOR_PRESETS = ["#829b91","#a78663","#c46a63","#c98a3c","#8a7bc4","#6a8dc4","#5fa57a","#7a7a7a"];
@@ -49,8 +48,6 @@ const $$ = s => [...document.querySelectorAll(s)];
 
 /* ---------- Время / id ---------- */
 
-/* ПАТЧ 2.1: короткий base36-идентификатор для блоков (6 символов).
-   Для документов/папок/тегов/шаблонов оставляем криптослучайный UUID. */
 function shortId(){
   const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
   let s = "";
@@ -88,10 +85,8 @@ function isArrayOfArrays(x){
   return Array.isArray(x) && x.every(r => Array.isArray(r));
 }
 
-/* ---------- Валидация анкора (ПАТЧ 2.2) ---------- */
+/* ---------- Валидация анкора ---------- */
 
-/* Разрешённые символы: a-z, 0-9, дефис, подчёркивание. До 64 символов.
-   Если приходит мусор — очищаем. */
 function sanitizeAnchor(str){
   if (typeof str !== "string") return "";
   return str
@@ -102,7 +97,8 @@ function sanitizeAnchor(str){
 }
 
 /* ПАТЧ 2.1: block() использует shortId(), добавлены поля колонок.
-   ПАТЧ 2.2: добавлены customId, lineNumber, blockMarker, blockMarkerColor. */
+   ПАТЧ 2.2: добавлен customId.
+   ПАТЧ 2.3.0: убраны lineNumber, blockMarker, blockMarkerColor. */
 function block(type = "text", content = ""){
   const b = {
     id: shortId(),
@@ -122,11 +118,8 @@ function block(type = "text", content = ""){
     gap:     null,
     valign:  "top",
     padding: 0,
-    /* ПАТЧ 2.2 — ID, нумерация, маркер блока */
-    customId: "",
-    lineNumber: null,
-    blockMarker: "",
-    blockMarkerColor: ""
+    /* ПАТЧ 2.2 — ID блока */
+    customId: ""
   };
   if (b.type === "table")   b.rows = [["",""],["",""]];
   if (b.type === "columns"){
@@ -223,8 +216,6 @@ function sanitize(html){
 function normalizeBlock(raw){
   if (!raw || typeof raw !== "object") return null;
 
-  /* ПАТЧ 2.1: если у старого блока id не короткий (UUID) — оставляем как есть.
-     Новые получают shortId() при создании через block(). */
   const b = {
     id: typeof raw.id === "string" && raw.id ? raw.id : shortId(),
     type: VALID_TYPES.has(raw.type) ? raw.type : "text",
@@ -243,17 +234,8 @@ function normalizeBlock(raw){
     gap:     null,
     valign:  VALID_VALIGN.has(raw.valign) ? raw.valign : "top",
     padding: Number.isFinite(raw.padding) ? Math.max(0, Math.min(64, raw.padding)) : 0,
-    /* ПАТЧ 2.2 */
-    customId: sanitizeAnchor(raw.customId),
-    lineNumber: Number.isFinite(raw.lineNumber) && raw.lineNumber > 0
-      ? Math.floor(raw.lineNumber)
-      : null,
-    blockMarker: (typeof raw.blockMarker === "string")
-      ? raw.blockMarker.slice(0, 4)
-      : "",
-    blockMarkerColor: (typeof raw.blockMarkerColor === "string")
-      ? raw.blockMarkerColor.slice(0, 32)
-      : ""
+    /* ПАТЧ 2.2: ID блока */
+    customId: sanitizeAnchor(raw.customId)
   };
 
   if (b.type === "table"){
@@ -269,7 +251,6 @@ function normalizeBlock(raw){
     b.cols = n;
     b.content = arr.map(v => typeof v === "string" ? v : "");
 
-    /* ПАТЧ 2.1: widths — нормализуем к 1 */
     let widths = Array.isArray(raw.widths) ? raw.widths.slice(0, n) : [];
     while (widths.length < n) widths.push(1);
     widths = widths.map(w => (Number.isFinite(w) && w > 0) ? w : 1);
@@ -308,11 +289,7 @@ function normalizeDocument(raw){
     createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : t,
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : t,
     customFields: (raw.customFields && typeof raw.customFields === "object") ? raw.customFields : {},
-    /* ПАТЧ 2.2: нумерация строк документа */
-    showLineNumbers:  !!raw.showLineNumbers,
-    lineNumberFormat: VALID_LINE_NUMBER_FORMATS.has(raw.lineNumberFormat)
-      ? raw.lineNumberFormat
-      : "1.",
+    /* ПАТЧ 2.3.0: убраны showLineNumbers, lineNumberFormat */
     blockCount: 0,
     charCount: 0,
     wordCount: 0
@@ -354,9 +331,6 @@ function normalizeTemplate(raw){
    Wikilinks: [[Имя документа]] и [[Имя документа#anchor]]
    ============================================================ */
 
-/* ПАТЧ 2.2: возвращает массив объектов { name, anchor }.
-   - name   — название документа (может содержать пробелы, кириллицу)
-   - anchor — ID блока внутри документа (может быть пустым) */
 function extractWikilinks(html){
   if (!html) return [];
   const tmp = document.createElement("div");
@@ -373,7 +347,6 @@ function extractWikilinks(html){
     const raw = m[1].trim();
     if (!raw) continue;
 
-    /* ПАТЧ 2.2: разбираем на name + anchor */
     const hashIdx = raw.indexOf("#");
     let name, anchor;
     if (hashIdx >= 0){
@@ -393,7 +366,6 @@ function extractWikilinks(html){
   return out;
 }
 
-/* ПАТЧ 2.2: рендер [[doc#anchor]] — с data-wikilink-anchor и визуальным #anchor */
 function renderWikilinks(html, resolver){
   if (!html) return "";
 
@@ -423,7 +395,6 @@ function renderWikilinks(html, resolver){
       const raw = rawName.trim();
       if (!raw) return full;
 
-      /* ПАТЧ 2.2: разбираем name#anchor */
       const hashIdx = raw.indexOf("#");
       let name, anchor;
       if (hashIdx >= 0){
@@ -441,7 +412,6 @@ function renderWikilinks(html, resolver){
       const missing = !info?.id;
       const cls = "wikilink" + (missing ? " missing" : "");
 
-      /* ПАТЧ 2.2: тултип с анкором */
       let title;
       if (missing){
         title = `Создать «${escape(name)}»`;
@@ -467,8 +437,6 @@ function renderWikilinks(html, resolver){
    HTML для превью и экспорта
    ============================================================ */
 
-/* ПАТЧ 2.1: blockToHTML учитывает widths/gap/valign для columns.
-   ПАТЧ 2.2: blockToHTML оборачивает в якорь при customId. */
 function blockToHTML(b){
   if (!b) return "";
   if (b.type === "divider") return `<hr class="divider">`;
@@ -593,7 +561,6 @@ function normalizeUI(raw){
 function normalizeSettings(raw){
   const r = raw && typeof raw === "object" ? raw : {};
 
-  /* ПАТЧ 1: добавлен "block:delete" */
   const HOTKEY_DEFAULTS = {
     "doc:new":        "mod+n",
     "doc:template":   "mod+shift+n",
@@ -685,7 +652,6 @@ function htmlToMD(html){
           case "a": {
             const href = child.getAttribute("href") || "";
             const wikilink = child.getAttribute("data-wikilink");
-            /* ПАТЧ 2.2: сохраняем анкор при экспорте в MD */
             const anchor = child.getAttribute("data-wikilink-anchor") || "";
             if (wikilink){
               out += anchor ? `[[${wikilink}#${anchor}]]` : `[[${wikilink}]]`;
@@ -794,13 +760,9 @@ return {
   types, VALID_TYPES, VALID_BG, VALID_FONT, VALID_INDENT, VALID_ALIGN, VALID_MARKER,
   /* ПАТЧ 2.1 */
   VALID_VALIGN,
-  /* ПАТЧ 2.2 */
-  VALID_LINE_NUMBER_FORMATS,
   EMOJI_PRESETS, COLOR_PRESETS,
-  /* ПАТЧ 2.1 + 2.2 */
   $, $$, uid, shortId, now, escape, el, isArrayOfArrays, block, toast,
   sanitize,
-  /* ПАТЧ 2.2 */
   sanitizeAnchor,
   normalizeBlock, normalizeDocument, normalizeTemplate, normalizeFolder, normalizeTag,
   normalizeUI, normalizeSettings, normalizeState,

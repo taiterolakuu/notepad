@@ -44,7 +44,6 @@ function toDisplayHTML(html){
   return U.renderWikilinks(html || "", wikilinkResolver);
 }
 
-/* ПАТЧ 2.2: toSourceHTML сохраняет анкор при обратном преобразовании */
 function toSourceHTML(html){
   if (!html) return "";
   const tmp = document.createElement("div");
@@ -112,16 +111,10 @@ function renderBlock(b){
   w.dataset.id = b.id;
   w.dataset.type = b.type;
 
-  /* ПАТЧ 2.2: data-anchor для кастомного ID */
+  /* ПАТЧ 2.2: data-anchor для кастомного ID блока */
   if (b.customId) w.dataset.anchor = b.customId;
 
-  /* ПАТЧ 2.2: маркер блока (для любого типа) */
-  if (b.blockMarker){
-    w.dataset.blockMarker = b.blockMarker;
-    if (b.blockMarkerColor){
-      w.style.setProperty("--block-marker-color", b.blockMarkerColor);
-    }
-  }
+  /* ПАТЧ 2.3.0: убран data-block-marker и --block-marker-color */
 
   if (b.bg)     w.dataset.bg = b.bg;
   if (b.font)   w.dataset.font = b.font;
@@ -407,7 +400,6 @@ function renderColumns(b){
       const rz = el("div", "col-resizer");
       rz.dataset.col = i;
       rz.dataset.blockId = b.id;
-      /* Позиция: граница между i и i+1 колонкой = сумма widths[0..i] */
       const pos = b.widths.slice(0, i + 1).reduce((a, w) => a + w, 0);
       rz.style.left = `calc(${pos * 100}% - 5px)`;
       g.append(rz);
@@ -542,7 +534,7 @@ function isSameWidths(a, b){
 
 /* ---------- ПАТЧ 2.1: drag-разделитель ---------- */
 
-let _colsDrag = null;   /* { block, colsEl, index, startX, startWidths, sumPx, beforeSnap } */
+let _colsDrag = null;
 
 function bindColumnResizer(){
   if (bindColumnResizer._bound) return;
@@ -620,7 +612,6 @@ function bindColumnResizer(){
       rz.classList.remove("dragging");
 
       if (_colsDrag){
-        /* Правильный undo: коммитим состояние ДО drag */
         commit(_colsDrag.beforeSnap);
         save();
       }
@@ -770,23 +761,7 @@ function render(){
     });
   });
 
-  /* ПАТЧ 2.2: нумерация строк документа */
-  if (doc?.showLineNumbers){
-    const fmt = doc.lineNumberFormat || "1.";
-    const fmtNum = (n) => {
-      if (fmt === "1)") return n + ")";
-      if (fmt === "#1") return "#" + n;
-      if (fmt === "L1") return "L" + n;
-      return n + ".";
-    };
-    const blocks = window.App.state.getBlocks();
-    editor.querySelectorAll(".block").forEach((w, i) => {
-      const blk = blocks.find(x => x.id === w.dataset.id);
-      const num = (blk && blk.lineNumber) ? blk.lineNumber : (i + 1);
-      w.dataset.lineNumber = fmtNum(num);
-      w.classList.add("numbered");
-    });
-  }
+  /* ПАТЧ 2.3.0: убран блок нумерации (showLineNumbers / lineNumberFormat) */
 
   /* ПАТЧ 2.1: bind drag-разделителей колонок (один раз) */
   bindColumnResizer();
@@ -1086,7 +1061,6 @@ function applySavedFonts(){
 
 /* ============================================================
    ПАТЧ 2.2: глобальный обработчик клика по wikilink
-   с поддержкой анкоров [[doc#id]]
    ============================================================ */
 
 function bindWikilinkClicks(){
@@ -1099,13 +1073,10 @@ function bindWikilinkClicks(){
 
     const name   = link.getAttribute("data-wikilink") || link.textContent;
     const id     = link.getAttribute("data-wikilink-id");
-    /* ПАТЧ 2.2 */
     const anchor = link.getAttribute("data-wikilink-anchor") || "";
     const S      = window.App.state.S;
 
-    /* Хелпер: открыть документ и (опционально) скроллить к анкору */
     const openDoc = (docId) => {
-      /* setActiveDoc — async; дожидаемся рендера и только потом скроллим */
       Promise.resolve(window.App.state.setActiveDoc(docId)).then(() => {
         if (anchor){
           window.App.state.scrollToAnchor(docId, anchor);

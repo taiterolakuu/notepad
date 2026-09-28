@@ -176,42 +176,7 @@ function openProperties(docId){
   tagInput.placeholder = "todo, идеи, важно";
   box.append(tagInput);
 
-  /* ============================================================
-     ПАТЧ 2.2: нумерация строк
-     ============================================================ */
-  const lnLabel = el("div", "props-label");
-  lnLabel.textContent = "Нумерация строк";
-  box.append(lnLabel);
-
-  const lnRow = el("div", "props-ln-row");
-
-  const lnToggle = el("button", "settings-toggle-btn" + (doc.showLineNumbers ? " on" : ""));
-  lnToggle.type = "button";
-  lnToggle.setAttribute("role", "switch");
-  lnToggle.setAttribute("aria-checked", doc.showLineNumbers ? "true" : "false");
-  lnToggle.onclick = () => {
-    doc.showLineNumbers = !doc.showLineNumbers;
-    lnToggle.classList.toggle("on", doc.showLineNumbers);
-    lnToggle.setAttribute("aria-checked", doc.showLineNumbers ? "true" : "false");
-  };
-  lnRow.append(lnToggle);
-
-  const lnFmt = el("select", "settings-select");
-  ["1.", "1)", "#1", "L1"].forEach(f => {
-    const o = document.createElement("option");
-    o.value = f;
-    o.textContent = f === "1." ? "1. 2. 3." :
-                    f === "1)" ? "1) 2) 3)" :
-                    f === "#1" ? "#1 #2 #3" :
-                    "L1 L2 L3";
-    if ((doc.lineNumberFormat || "1.") === f) o.selected = true;
-    lnFmt.append(o);
-  });
-  lnFmt.onchange = () => { doc.lineNumberFormat = lnFmt.value; };
-  lnRow.append(lnFmt);
-
-  box.append(lnRow);
-  /* ПАТЧ 2.2 — конец блока нумерации */
+  /* ПАТЧ 2.3.0: секция «Нумерация строк» удалена */
 
   /* Actions */
   const actions = el("div", "modal-actions");
@@ -236,15 +201,11 @@ function openProperties(docId){
 
     doc.description = description;
     doc.tags = tags;
-    /* ПАТЧ 2.2: showLineNumbers и lineNumberFormat уже обновлены в doc
-       через lnToggle / lnFmt.onchange */
     doc.updatedAt = now();
     await window.App.db.saveDocument(doc);
 
     closeModal();
     render();
-    /* ПАТЧ 2.2: перерендер редактора для показа/скрытия нумерации */
-    try { window.App.render.render(); } catch(e){}
     window.App.tabs?.render();
     toast("Свойства сохранены");
   };
