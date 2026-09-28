@@ -15,7 +15,6 @@ const St = () => window.App.state.S;
 
 /* ---------- Дефолты ---------- */
 
-/* ПАТЧ 1: добавлено "block:delete": "mod+Backspace" */
 const DEFAULTS = {
   "doc:new":        "mod+n",
   "doc:template":   "mod+shift+n",
@@ -37,12 +36,13 @@ const DEFAULTS = {
   "list:none":      "mod+shift+8",
   "edit:undo":      "mod+z",
   "edit:redo":      "mod+y",
-  "find:focus":     "mod+f",
+  "lines:panel":    "mod+shift+l",
   "lock:now":       "",
-  "block:delete":   "mod+Backspace"
+  "block:delete":   "mod+Backspace",
+  "block:new":      "mod+Enter",
+  "line:new":       "mod+shift+Enter"
 };
 
-/* ПАТЧ 1: добавлен лейбл "block:delete" */
 const LABELS = {
   "doc:new":        "Новый документ",
   "doc:template":   "Новый из шаблона",
@@ -64,9 +64,11 @@ const LABELS = {
   "list:none":      "Снять список",
   "edit:undo":      "Отменить",
   "edit:redo":      "Повторить",
-  "find:focus":     "Поиск в документе",
+  "lines:panel":    "Панель строк блока",
   "lock:now":       "Заблокировать сейчас",
-  "block:delete":   "Удалить блок"
+  "block:delete":   "Удалить блок",
+  "block:new":      "Новый блок",
+  "line:new":       "Новая строка"
 };
 
 const BROWSER_TAKEN = new Set([
@@ -248,10 +250,11 @@ function dispatch(actionId, ev){
       S().redo();
       return;
 
-    /* Поиск */
-    case "find:focus": {
-      const el = document.getElementById("find");
-      if (el){ el.focus(); el.select?.(); }
+    /* Панель строк (Ctrl+F) */
+    case "lines:panel": {
+      if (menus?.openLinesPanel){
+        menus.openLinesPanel();
+      }
       return;
     }
 
@@ -260,21 +263,82 @@ function dispatch(actionId, ev){
       window.App.lock?.lock?.();
       return;
 
-    /* ПАТЧ 1: удаление блока.
-       Реальная логика — в menus.js (слушает mod+Backspace).
-       Здесь только фолбэк: если по какой-то причине menus.js
-       не загружен — эмулируем keydown, чтобы сработал его
-       обработчик. Но в onKeydown мы эту комбинацию
-       пропускаем, поэтому сюда не должны попадать. */
+    /* Удаление блока */
     case "block:delete": {
-      const ev = new KeyboardEvent("keydown", {
+      const ev2 = new KeyboardEvent("keydown", {
         key: "Backspace",
         ctrlKey: true,
         metaKey: true,
         bubbles: true,
         cancelable: true
       });
-      (document.activeElement || document.body).dispatchEvent(ev);
+      (document.activeElement || document.body).dispatchEvent(ev2);
+      return;
+    }
+
+    /* Новый блок (Ctrl+Enter). В .line — не срабатывает, там keyLine. */
+    case "block:new": {
+      const ae = document.activeElement;
+      if (ae?.closest?.(".line")) return; // уже сделал keyLine
+
+      if (menus?.run){
+        menus.run("block:new");
+      } else {
+        const state = S();
+        const blocks = state.getBlocks ? state.getBlocks() : state.S.blocks;
+        const blockEl = ae?.closest?.(".block");
+        let idx = blocks.length;
+        if (blockEl){
+          const found = blocks.findIndex(b => b.id === blockEl.dataset.id);
+          if (found >= 0) idx = found + 1;
+        }
+        window.App.render.add("text", idx);
+      }
+      return;
+    }
+
+    /* Новая строка (Ctrl+Shift+Enter).
+       Работает, только если активна .line. */
+    case "line:new": {
+      const ae = document.activeElement;
+      const lineEl = ae?.closest?.(".line");
+      if (!lineEl) return; // не в строке — нечего делать
+
+      const blockEl = lineEl.closest(".block");
+      if (!blockEl) return;
+
+      const state = S();
+      const blocks = state.getBlocks ? state.getBlocks() : state.S.blocks;
+      const b = blocks.find(x => x.id === blockEl.dataset.id);
+      if (!b) return;
+
+      if (!U.LINE_TYPES || !U.LINE_TYPES.has(b.type)) return;
+
+      const lineIdx = parseInt(lineEl.dataset.lineIndex, 10) || 0;
+
+      const old = state.snapshot();
+      const newLn = U.line("");
+      if (!Array.isArray(b.lines)) b.lines = [];
+      b.lines.splice(lineIdx + 1, 0, newLn);
+      b.content = b.lines.map(l => l.text).join("<br>");
+      state.commit(old);
+      window.App.render.render();
+
+      /* Фокус на новую строку */
+      setTimeout(() => {
+        const el2 = document.querySelector(
+          `#editor .block[data-id="${b.id}"] .line[data-line-id="${newLn.id}"]`
+        );
+        if (el2){
+          const rr = document.createRange();
+          rr.setStart(el2, 0);
+          rr.collapse(true);
+          const s = getSelection();
+          s.removeAllRanges();
+          s.addRange(rr);
+          el2.focus();
+        }
+      }, 0);
       return;
     }
   }
@@ -291,11 +355,13 @@ function inField(){
 }
 
 function onKeydown(e){
-  /* Если settings.js сейчас захватывает комбинацию — не реагируем вообще */
+  /* ПАТЧ 2.3.2: если render.js уже обработал — не дублируем */
+  if (e.defaultPrevented) return;
+
+  /* Если settings.js сейчас захватывает комбинацию — не реагируем */
   if (window.App.settings?.isCapturing?.()) return;
 
-  /* ПАТЧ 1: mod+Backspace обрабатывается в menus.js.
-     Пропускаем здесь, чтобы не сработало дважды. */
+  /* mod+Backspace обрабатывается в menus.js */
   if ((e.ctrlKey || e.metaKey) && e.key === "Backspace") return;
 
   /* Поповер [[ перехватывает клавиши раньше */
@@ -312,9 +378,43 @@ function onKeydown(e){
   }
   if (!actionId) return;
 
+  /* ============================================================
+     ПАТЧ 2.3.2: block:new и line:new.
+     block:new — только если активен НЕ .line (иначе keyLine).
+     line:new — только если активна .line.
+     ============================================================ */
+  const ae = document.activeElement;
+  const inLine = !!ae?.closest?.(".line");
+  const inEditor = !!(ae?.isContentEditable && ae.closest?.("#editor"));
+
+  if (actionId === "block:new"){
+    if (inLine) return;          /* обрабатывает keyLine */
+    if (!inEditor) return;       /* вне редактора не создаём */
+    e.preventDefault();
+    e.stopPropagation();
+    dispatch(actionId, e);
+    return;
+  }
+
+  if (actionId === "line:new"){
+    if (!inLine) return;         /* не в строке — нечего делать */
+    e.preventDefault();
+    e.stopPropagation();
+    dispatch(actionId, e);
+    return;
+  }
+
   /* Некоторые действия не должны срабатывать в поле ввода */
   const skipInField = new Set(["doc:trash"]);
   if (skipInField.has(actionId) && inField()) return;
+
+  /* lines:panel — работает всегда */
+  if (actionId === "lines:panel"){
+    e.preventDefault();
+    e.stopPropagation();
+    dispatch(actionId, e);
+    return;
+  }
 
   /* Если фокус в поле и нет модификатора и это не функциональная клавиша */
   const hasMod = e.ctrlKey || e.metaKey || e.altKey;
@@ -327,7 +427,8 @@ function onKeydown(e){
 }
 
 function bind(){
-  document.addEventListener("keydown", onKeydown);
+  window.addEventListener("keydown", onKeydown, true);   // самый ранний уровень
+  document.addEventListener("keydown", onKeydown, true); // на всякий случай
 }
 
 /* ---------- Публичный API ---------- */

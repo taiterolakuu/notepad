@@ -11,7 +11,8 @@ window.App.menus = (() => {
 
 const U = window.App.utils;
 const {
-  $,$$, types, htmlToText, uid, toast, escape
+  $,$$, types, htmlToText, uid, toast, escape,
+  LINE_TYPES, newLine: newLineFn, shortId
 } = U;
 
 const St = () => window.App.state.S;
@@ -46,6 +47,7 @@ let cmdIndex          = 0;
 let lastCmdLen        = -1;
 let slashBody         = null;
 let paletteMode       = "commands";
+let linesPanelOpen    = false;
 
 const ALIGN_CMDS = new Set(["align-left","align-center","align-right"]);
 
@@ -78,6 +80,7 @@ function slashRender(){
     x.onclick = () => slashChoose(x.dataset.type));
 }
 
+/* ПАТЧ 2.3.1: при создании блока учитываем LINE_TYPES */
 function slashChoose(type){
   const b = St().blocks.find(x => x.id === getSlashBlockId());
   if (b && b.type === "text"){
@@ -90,13 +93,27 @@ function slashChoose(type){
       b.gap = 14;
       b.valign = "top";
       b.padding = 0;
+      b.lines = [];
     }
-    else if (type === "table"){ b.rows = [["",""],["",""]]; b.content = ""; }
+    else if (type === "table"){
+      b.rows = [["",""],["",""]];
+      b.content = "";
+      b.lines = [];
+    }
     else if (type === "ul" || type === "ol"){
       b.content = "<li><br></li>";
+      b.lines = [];
       if (type === "ul" && !b.marker) b.marker = "disc";
     }
-    else b.content = "";
+    else if (LINE_TYPES.has(type)){
+      /* ПАТЧ 2.3.1: LINE_TYPE — создаём одну пустую строку */
+      b.content = "";
+      b.lines = [ newLineFn("") ];
+    }
+    else {
+      b.content = "";
+      b.lines = [];
+    }
     commit(old);
     render();
     setActive(b.id);
@@ -136,6 +153,7 @@ const commands = [
   ["Колонки",            "Добавить колонки",             "block:columns",     "Блоки"],
   ["Изображение",        "Добавить изображение",         "block:image",       "Блоки"],
   ["Разделитель",        "Горизонтальная линия",         "block:divider",     "Блоки"],
+  ["Новый блок",         "Ctrl+Enter",                   "block:new",         "Блоки"],
   ["Удалить блок",       "Ctrl+Backspace",               "block:delete",      "Блоки"],
 
   /* --- форматирование --- */
@@ -160,6 +178,7 @@ const commands = [
 
   /* --- навигация --- */
   ["Поиск по содержимому","Все документы (Ctrl+Shift+F)", "nav:search",        "Навигация"],
+  ["Строки блока",       "Ctrl+Shift+L",                  "lines:panel",       "Навигация"],
   ["Следующий документ", "Ctrl+Tab",                      "nav:nextDoc",       "Навигация"],
   ["Предыдущий документ","Ctrl+Shift+Tab",                "nav:prevDoc",       "Навигация"],
   ["Свернуть панель",    "Ctrl+\\",                       "nav:toggleSidebar", "Навигация"],
@@ -466,6 +485,20 @@ function run(c){
   if (c.startsWith("block:")){
     const type = c.slice(6);
 
+    /* ПАТЧ 2.3.1: block:new — создать блок после текущего */
+    if (type === "new"){
+      const activeEl = document.activeElement;
+      const blockEl = activeEl?.closest?.(".block");
+      if (blockEl){
+        const bid = blockEl.dataset.id;
+        const blocks = St().blocks;
+        const idx = blocks.findIndex(b => b.id === bid);
+        if (idx >= 0){ add("text", idx + 1); return; }
+      }
+      add("text");
+      return;
+    }
+
     if (type === "delete"){
       const ev = new KeyboardEvent("keydown", {
         key: "Backspace",
@@ -520,6 +553,7 @@ function run(c){
   }
 
   if (c === "nav:search")      { openGlobalSearch(); return; }
+  if (c === "lines:panel")     { openLinesPanel(); return; }
   if (c === "nav:nextDoc")     { window.App.tabs?.nextTab(); return; }
   if (c === "nav:prevDoc")     { window.App.tabs?.prevTab(); return; }
   if (c === "nav:toggleSidebar"){ window.App.sidebar?.toggleSidebar(); return; }
@@ -605,7 +639,13 @@ function globalSearchRender(q){
     }
 
     for (const b of doc.blocks || []){
-      const text = htmlToText(b.content || "");
+      let text = "";
+      /* ПАТЧ 2.3.1: учитываем строки */
+      if (Array.isArray(b.lines) && b.lines.length){
+        text = b.lines.map(l => htmlToText(l.text || "")).join(" ");
+      } else {
+        text = htmlToText(b.content || "");
+      }
       if (text.toLowerCase().includes(query)){
         const idx = text.toLowerCase().indexOf(query);
         const snippet = text.slice(Math.max(0, idx - 30), idx + 60);
@@ -643,7 +683,89 @@ function globalSearchRender(q){
   });
 }
 
-/* ---------- Списки: работа на уровне блоков ---------- */
+/* ============================================================
+   ПАТЧ 2.3.1: панель строк (Ctrl+F)
+   ============================================================ */
+
+/* Открывает панель со списком строк текущего блока (или всех блоков),
+   показывает их id / customId, кнопки копирования, перехода */
+function openLinesPanel(){
+  const panel = $("#lines-panel");
+  if (!panel){
+    /* Fallback: если нет элемента в HTML — открываем palette с командой */
+    openPalette();
+    return;
+  }
+
+  const activeEl = document.activeElement;
+  const blockEl = activeEl?.closest?.(".block");
+  let b = null;
+  if (blockEl){
+    b = St().blocks.find(x => x.id === blockEl.dataset.id);
+  }
+  /* Если не нашли — берём первый LINE_TYPE блок */
+  if (!b || !LINE_TYPES.has(b.type)){
+    b = St().blocks.find(x => LINE_TYPES.has(x.type));
+  }
+
+  if (!b){
+    toast("Нет строк в документе");
+    return;
+  }
+
+  panel.dataset.blockId = b.id;
+
+  const list = $("#lines-panel-list");
+  if (!list) return;
+
+  if (!Array.isArray(b.lines) || !b.lines.length){
+    list.innerHTML = `<div class="lsp-empty">Нет строк</div>`;
+  } else {
+    list.innerHTML = b.lines.map((ln, i) => {
+      const id = ln.customId || ln.id;
+      const text = htmlToText(ln.text || "") || "(пусто)";
+      return `
+        <div class="lsp-item" data-line-id="${escape(id)}" data-line-index="${i}">
+          <span class="lsp-num">${i + 1}</span>
+          <span class="lsp-text">${escape(text.slice(0, 60))}</span>
+          <span class="lsp-id">#${escape(id)}</span>
+          <button class="lsp-btn" data-action="copy-id"     title="Копировать ID">ID</button>
+          <button class="lsp-btn" data-action="copy-link"   title="Копировать ссылку">🔗</button>
+          <button class="lsp-btn" data-action="edit-id"     title="Изменить ID">✎</button>
+          <button class="lsp-btn danger" data-action="remove-id" title="Удалить ID">✗</button>
+        </div>`;
+    }).join("");
+  }
+
+  /* Заголовок панели — ссылка на весь блок */
+  const head = $("#lines-panel-head");
+  if (head){
+    const doc = getActiveDoc();
+    const blockId = b.customId || b.id;
+    head.innerHTML = `
+      <div class="lsp-title">Строки блока</div>
+      <div class="lsp-block">
+        #${escape(blockId)}
+        <button class="lsp-btn" data-action="copy-block-id"   title="Копировать ID блока">ID</button>
+        <button class="lsp-btn" data-action="copy-block-link" title="Копировать ссылку на блок">🔗</button>
+      </div>`;
+  }
+
+  panel.style.display = "block";
+  linesPanelOpen = true;
+}
+
+function closeLinesPanel(){
+  const panel = $("#lines-panel");
+  if (panel) panel.style.display = "none";
+  linesPanelOpen = false;
+}
+
+function isLinesPanelOpen(){ return linesPanelOpen; }
+
+/* ============================================================
+   Списки: работа на уровне блоков
+   ============================================================ */
 
 function getSelectedBlockRange(){
   const sel = getSelection();
@@ -665,6 +787,10 @@ function listItemsHTML(content){
 function blockToOneLi(b){
   if (b.type === "ul" || b.type === "ol"){
     return listItemsHTML(b.content);
+  }
+  /* ПАТЧ 2.3.1: если у блока есть строки — берём их */
+  if (Array.isArray(b.lines) && b.lines.length){
+    return b.lines.map(l => l.text || "<br>");
   }
   return [b.content || "<br>"];
 }
@@ -689,6 +815,7 @@ function mergeBlocksIntoList(ids, kind, marker){
 
   const newBlock = U.block(kind, "");
   newBlock.content = items.map(h => `<li>${h}</li>`).join("");
+  newBlock.lines = [];
   if (kind === "ul") newBlock.marker = marker || "disc";
 
   const src = blocks[firstIdx];
@@ -969,11 +1096,23 @@ function syncContentFromSelection(){
   if (!blk) return;
   const sel = getSelection();
   const node = sel.anchorNode?.parentElement;
+  /* ПАТЧ 2.3.1: для LINE_TYPES содержимое в .line, а не в .body */
+  const lineEl = node?.closest?.(".line");
+  if (lineEl && blk.lines){
+    const idx = parseInt(lineEl.dataset.lineIndex, 10);
+    if (blk.lines[idx]){
+      blk.lines[idx].text = window.App.render.toSourceHTML(lineEl.innerHTML);
+      blk.content = blk.lines.map(l => l.text).join("<br>");
+      save();
+      commitDebounced(snapshot());
+      return;
+    }
+  }
   const body = node?.closest(".body")
     || lastRange?.startContainer?.parentElement?.closest?.(".body");
   if (body){
     window.App.render.cleanupEmptyLis(body);
-    blk.content = body.innerHTML;
+    blk.content = window.App.render.toSourceHTML(body.innerHTML);
     save();
     commitDebounced(snapshot());
   }
@@ -1126,18 +1265,7 @@ function fontMenuRender(query){
 function applyFontToSelection(name){
   restoreLastRange();
   document.execCommand("fontName", false, name);
-
-  const blk = getActiveBlockForToolbar();
-  const sel = getSelection();
-  const node = sel.anchorNode?.parentElement;
-  const body = node?.closest(".body")
-    || lastRange?.startContainer?.parentElement?.closest?.(".body");
-  if (blk && body){
-    blk.content = body.innerHTML;
-    save();
-    commitDebounced(snapshot());
-  }
-
+  syncContentFromSelection();
   toast(`Шрифт: ${name}`);
 }
 
@@ -1145,7 +1273,6 @@ function applyFontToSelection(name){
    Handle menu
    ============================================================ */
 
-/* ПАТЧ 2.2: заполняет ID-строку */
 function fillIdSection(b){
   const idValue = document.getElementById("hm-id-value");
   const idInput = document.getElementById("hm-id-input");
@@ -1250,6 +1377,14 @@ function openHandleMenu(anchor, blockId){
     if (b?.type === "columns") fillColsRatioButtons(colsSection, b);
   }
 
+  /* ПАТЧ 2.3.1: секция «Строки» — только для LINE_TYPES с 2+ строками */
+  const linesSection = menu.querySelector('[data-section="lines"]');
+  if (linesSection){
+    const showLines = b && LINE_TYPES.has(b.type) && Array.isArray(b.lines) && b.lines.length > 1;
+    linesSection.hidden = !showLines;
+    if (showLines) fillLinesList(linesSection, b);
+  }
+
   if (b) fillIdSection(b);
 
   menu.dataset.display = "block";
@@ -1275,6 +1410,27 @@ function closeHandleMenu(){
 
   handleMenuOpen = false;
   handleMenuBlock = null;
+}
+
+/* ПАТЧ 2.3.1: заполняет секцию «Строки» списком строк блока */
+function fillLinesList(section, b){
+  const list = section.querySelector('[data-group="lines-list"]');
+  if (!list) return;
+
+  list.innerHTML = b.lines.map((ln, i) => {
+    const id = ln.customId || ln.id;
+    const text = htmlToText(ln.text || "") || "(пусто)";
+    return `
+      <div class="hm-line-row" data-line-id="${escape(id)}" data-line-index="${i}">
+        <span class="hm-line-num">${i + 1}</span>
+        <span class="hm-line-text">${escape(text.slice(0, 40))}</span>
+        <span class="hm-line-id">#${escape(id)}</span>
+        <button class="hm-id-btn" data-action="line-copy-id"   type="button" title="Копировать ID строки">ID</button>
+        <button class="hm-id-btn" data-action="line-copy-link" type="button" title="Копировать ссылку на строку">🔗</button>
+        <button class="hm-id-btn" data-action="line-edit-id"   type="button" title="Изменить ID строки">✎</button>
+        <button class="hm-id-btn" data-action="line-remove-id" type="button" title="Удалить ID строки">✗</button>
+      </div>`;
+  }).join("");
 }
 
 function fillColsRatioButtons(section, b){
@@ -1330,6 +1486,9 @@ function syncHandleMenuState(){
 
   menu.querySelectorAll("[data-group]").forEach(groupEl => {
     const group = groupEl.dataset.group;
+    /* пропускаем список строк и динамические кнопки пресетов */
+    if (group === "lines-list" || group === "cols-ratio") return;
+
     groupEl.querySelectorAll("button").forEach(btn => {
       const val = btn.dataset.val;
       let on = false;
@@ -1339,18 +1498,18 @@ function syncHandleMenuState(){
       if (group === "font")   on = ((b.font || "") === val);
       if (group === "indent") on = (String(b.indent || 0) === val);
       if (group === "marker") on = ((b.marker || "disc") === val);
-      /* ПАТЧ 2.1 */
       if (group === "cols-count")  on = (String(b.cols) === val);
       if (group === "cols-valign") on = ((b.valign || "top") === val);
       if (group === "cols-gap")    on = (String(b.gap ?? 14) === val);
-      /* ПАТЧ 2.3.0: убрано blockMarker */
 
       btn.classList.toggle("on", on);
     });
   });
 }
 
-/* ---------- Bind UI ---------- */
+/* ============================================================
+   Bind UI
+   ============================================================ */
 
 function bindMenus(){
   const slashInput = $("#slashinput");
@@ -1430,9 +1589,8 @@ function bindMenus(){
 
   const handleMenu = $("#handlemenu");
   if (handleMenu){
-    /* ПАТЧ 2.3.0: убраны .hm-inline-btn, .hm-input-inline из селектора */
     handleMenu.addEventListener("mousedown", e => {
-      if (e.target.closest("[data-group] button, .hm-actions button, .hm-id-btn, .hm-id-input")) {
+      if (e.target.closest("[data-group] button, .hm-actions button, .hm-id-btn, .hm-id-input, .hm-line-row button")) {
         e.preventDefault();
       }
     });
@@ -1443,6 +1601,75 @@ function bindMenus(){
       const b = St().blocks.find(x => x.id === handleMenuBlock);
       if (!b) return;
 
+      /* ============================================================
+         ПАТЧ 2.3.1: действия со строками
+         ============================================================ */
+      const lineRow = btn.closest(".hm-line-row");
+      if (lineRow){
+        const lineIdx = parseInt(lineRow.dataset.lineIndex, 10);
+        const ln = b.lines && b.lines[lineIdx];
+        if (!ln) return;
+
+        const action = btn.dataset.action;
+        if (action === "line-copy-id"){
+          const id = ln.customId || ln.id;
+          navigator.clipboard.writeText(id).then(
+            () => toast("ID строки скопирован: " + id),
+            () => toast("Не удалось скопировать")
+          );
+          return;
+        }
+        if (action === "line-copy-link"){
+          const doc = getActiveDoc();
+          const blockId = b.customId || b.id;
+          const lineId = ln.customId || ln.id;
+          const title = doc?.title || "Без названия";
+          const link = `[[${title}#${blockId}#${lineId}]]`;
+          navigator.clipboard.writeText(link).then(
+            () => toast("Ссылка на строку скопирована"),
+            () => toast("Не удалось скопировать")
+          );
+          return;
+        }
+        if (action === "line-edit-id"){
+          const newId = prompt("Новый ID строки:", ln.customId || ln.id);
+          if (newId === null) return;
+          const clean = String(newId).trim().toLowerCase().replace(/[^a-z0-9\-_]/g, "").slice(0, 64);
+          const old = snapshot();
+          if (!clean || clean === ln.id){
+            ln.customId = "";
+          } else {
+            /* Проверка уникальности в документе */
+            const doc = getActiveDoc();
+            let final = clean;
+            let n = 2;
+            while (doc.blocks.some(x => (x.lines || []).some(l =>
+              l !== ln && (l.customId === final || l.id === final)
+            ))){
+              final = `${clean}-${n}`;
+              n++;
+            }
+            ln.customId = final;
+          }
+          commit(old);
+          render();
+          setSelectedBlock(b.id);
+          fillLinesList(handleMenu.querySelector('[data-section="lines"]'), b);
+          return;
+        }
+        if (action === "line-remove-id"){
+          if (!ln.customId) return;
+          const old = snapshot();
+          ln.customId = "";
+          commit(old);
+          render();
+          setSelectedBlock(b.id);
+          fillLinesList(handleMenu.querySelector('[data-section="lines"]'), b);
+          return;
+        }
+      }
+
+      /* --- Стандартные действия handle-menu --- */
       if (btn.dataset.action === "copy-id"){
         const id = b.customId || b.id;
         navigator.clipboard.writeText(id).then(
@@ -1476,13 +1703,21 @@ function bindMenus(){
         return;
       }
 
-      /* ПАТЧ 2.3.0: убран apply-custom-marker */
-
       if (btn.dataset.action === "duplicate"){
         const old = snapshot();
         const copy = JSON.parse(JSON.stringify(b));
-        copy.id = uid();
+        copy.id = shortId();
         copy.customId = "";
+        /* ПАТЧ 2.3.1: регенерируем lineId, чтобы не было дубликатов */
+        if (Array.isArray(copy.lines)){
+          for (const ln of copy.lines){
+            ln.id = shortId();
+            ln.customId = "";
+            if (Array.isArray(ln.fragments)){
+              ln.fragments = ln.fragments.map(f => ({ ...f, id: shortId(), customId: "" }));
+            }
+          }
+        }
         const i = St().blocks.findIndex(x => x.id === b.id);
         St().blocks.splice(i + 1, 0, copy);
         commit(old);
@@ -1491,6 +1726,7 @@ function bindMenus(){
         closeHandleMenu();
         return;
       }
+
       if (btn.dataset.action === "delete"){
         if (St().blocks.length <= 1) { toast("Нельзя удалить последний блок"); return; }
         const old = snapshot();
@@ -1564,8 +1800,6 @@ function bindMenus(){
         return;
       }
 
-      /* ПАТЧ 2.3.0: убран group === "blockMarker" */
-
       const old = snapshot();
 
       if (group === "type"){
@@ -1573,6 +1807,7 @@ function bindMenus(){
         if (val === "table"){
           b.rows = b.rows || [["",""],["",""]];
           b.content = "";
+          b.lines = [];
         } else if (val === "columns"){
           b.cols = b.cols || 2;
           b.content = Array.isArray(b.content) ? b.content : ["", ""];
@@ -1581,13 +1816,22 @@ function bindMenus(){
           }
           if (!Number.isFinite(b.gap)) b.gap = 14;
           if (!b.valign) b.valign = "top";
+          b.lines = [];
         } else if (val === "ul" || val === "ol"){
           if (typeof b.content !== "string") b.content = "";
           if (!/<\/?li/i.test(b.content)) b.content = "<li><br></li>";
           if (val === "ul" && !b.marker) b.marker = "disc";
+          b.lines = [];
+        } else if (LINE_TYPES.has(val)){
+          /* ПАТЧ 2.3.1: LINE_TYPE — если lines не было, создаём одну */
+          if (!Array.isArray(b.lines) || !b.lines.length){
+            b.lines = [ newLineFn("") ];
+            b.content = "";
+          }
         } else {
           if (typeof b.content !== "string") b.content = "";
           if (val === "code") b.content = htmlToText(b.content);
+          b.lines = [];
         }
       }
       else if (group === "bg")     b.bg = val;
@@ -1600,6 +1844,7 @@ function bindMenus(){
       setSelectedBlock(b.id);
       syncHandleMenuState();
 
+      /* Обновляем секции при смене типа */
       if (group === "type"){
         const cs = handleMenu.querySelector('[data-section="columns"]');
         if (cs){
@@ -1608,6 +1853,137 @@ function bindMenus(){
         }
         const ms = handleMenu.querySelector('[data-section="marker"]');
         if (ms) ms.hidden = (val !== "ul");
+        const ls = handleMenu.querySelector('[data-section="lines"]');
+        if (ls){
+          const show = LINE_TYPES.has(val) && Array.isArray(b.lines) && b.lines.length > 1;
+          ls.hidden = !show;
+          if (show) fillLinesList(ls, b);
+        }
+      }
+    });
+  }
+
+  /* === Панель строк: обработчики (bind один раз) === */
+  const linesPanel = $("#lines-panel");
+  if (linesPanel && !linesPanel.dataset.bound){
+    linesPanel.dataset.bound = "1";
+
+    linesPanel.addEventListener("mousedown", e => {
+      if (e.target.closest("button, .lsp-item")) e.preventDefault();
+    });
+
+    linesPanel.addEventListener("click", e => {
+      /* Кнопка закрытия */
+      if (e.target.closest('[data-action="close"]')){
+        closeLinesPanel();
+        return;
+      }
+
+      const btn = e.target.closest("button");
+      const panelBlockId = linesPanel.dataset.blockId;
+      const b = St().blocks.find(x => x.id === panelBlockId);
+      if (!b) return;
+
+      /* Действия по строке */
+      const row = e.target.closest(".lsp-item");
+      if (row && btn){
+        const lineIdx = parseInt(row.dataset.lineIndex, 10);
+        const ln = b.lines && b.lines[lineIdx];
+        if (!ln) return;
+
+        const action = btn.dataset.action;
+        if (action === "copy-id"){
+          const id = ln.customId || ln.id;
+          navigator.clipboard.writeText(id).then(
+            () => toast("ID строки скопирован: " + id),
+            () => toast("Не удалось скопировать")
+          );
+          return;
+        }
+        if (action === "copy-link"){
+          const doc = getActiveDoc();
+          const blockId = b.customId || b.id;
+          const lineId = ln.customId || ln.id;
+          const title = doc?.title || "Без названия";
+          const link = `[[${title}#${blockId}#${lineId}]]`;
+          navigator.clipboard.writeText(link).then(
+            () => toast("Ссылка на строку скопирована"),
+            () => toast("Не удалось скопировать")
+          );
+          return;
+        }
+        if (action === "edit-id"){
+          const newId = prompt("Новый ID строки:", ln.customId || ln.id);
+          if (newId === null) return;
+          const clean = String(newId).trim().toLowerCase().replace(/[^a-z0-9\-_]/g, "").slice(0, 64);
+          const old = snapshot();
+          if (!clean || clean === ln.id){
+            ln.customId = "";
+          } else {
+            const doc = getActiveDoc();
+            let final = clean;
+            let n = 2;
+            while (doc.blocks.some(x => (x.lines || []).some(l =>
+              l !== ln && (l.customId === final || l.id === final)
+            ))){
+              final = `${clean}-${n}`;
+              n++;
+            }
+            ln.customId = final;
+          }
+          commit(old);
+          render();
+          setSelectedBlock(b.id);
+          openLinesPanel();
+          return;
+        }
+        if (action === "remove-id"){
+          if (!ln.customId) return;
+          const old = snapshot();
+          ln.customId = "";
+          commit(old);
+          render();
+          setSelectedBlock(b.id);
+          openLinesPanel();
+          return;
+        }
+        /* Клик по строке (без кнопки) — фокус */
+        return;
+      }
+
+      /* Действия по блоку */
+      if (btn && btn.dataset.action === "copy-block-id"){
+        const id = b.customId || b.id;
+        navigator.clipboard.writeText(id).then(
+          () => toast("ID блока скопирован: " + id),
+          () => toast("Не удалось скопировать")
+        );
+        return;
+      }
+      if (btn && btn.dataset.action === "copy-block-link"){
+        const doc = getActiveDoc();
+        const id = b.customId || b.id;
+        const title = doc?.title || "Без названия";
+        const link = `[[${title}#${id}]]`;
+        navigator.clipboard.writeText(link).then(
+          () => toast("Ссылка на блок скопирована"),
+          () => toast("Не удалось скопировать")
+        );
+        return;
+      }
+
+      /* Клик по строке (не по кнопке) — скролл к строке + фокус */
+      if (row && !btn){
+        const lineId = row.dataset.lineId;
+        window.App.state.scrollToAnchorPath(b.id === St().activeDocId ? St().activeDocId : St().activeDocId, b.customId || b.id, lineId, "");
+        closeLinesPanel();
+      }
+    });
+
+    /* Escape */
+    document.addEventListener("keydown", e => {
+      if (e.key === "Escape" && isLinesPanelOpen()){
+        closeLinesPanel();
       }
     });
   }
@@ -1647,6 +2023,11 @@ function bindMenus(){
         closeMarkerMenu();
       }
     }
+    if (isLinesPanelOpen()){
+      if (!e.target.closest("#lines-panel")){
+        closeLinesPanel();
+      }
+    }
 
     if (e.target.closest("#floatbar"))   return;
     if (e.target.closest("#palette"))    return;
@@ -1654,6 +2035,7 @@ function bindMenus(){
     if (e.target.closest("#fontmenu"))   return;
     if (e.target.closest("#handlemenu")) return;
     if (e.target.closest("#markermenu")) return;
+    if (e.target.closest("#lines-panel"))return;
     if (e.target.closest(".block"))      return;
     if (e.target.closest("header"))      return;
     if (e.target.closest(".title"))      return;
@@ -1718,9 +2100,12 @@ function bindMenus(){
     updateFloatbarState();
   });
 
+  /* Ctrl+Backspace — удалить блок (не строку) */
   document.addEventListener("keydown", e => {
     const isMod = e.ctrlKey || e.metaKey;
     if (!isMod || e.key !== "Backspace") return;
+    /* Ctrl+Backspace внутри .line обрабатывает keyLine — не перехватываем */
+    if (document.activeElement?.closest?.(".line")) return;
 
     const ae = document.activeElement;
     if (!ae) return;
@@ -1752,6 +2137,7 @@ function bindMenus(){
         keep.checked = false;
         keep.rows = null;
         keep.cols = null;
+        keep.lines = [ newLineFn("") ];
         blocks.push(keep);
       } else {
         blocks.push(U.block("text", ""));
@@ -1783,6 +2169,7 @@ function bindMenus(){
     if (markerMenuOpen)      closeMarkerMenu();
     else if (fontMenuOpen)   closeFontMenu();
     else if (handleMenuOpen) closeHandleMenu();
+    else if (isLinesPanelOpen()) closeLinesPanel();
     else                     closeMenus();
   });
 }
@@ -1791,6 +2178,8 @@ return {
   openSlash, slashRender, slashChoose,
   openPalette, closeMenus, cmdRender, run,
   openGlobalSearch,
+  /* ПАТЧ 2.3.1 */
+  openLinesPanel, closeLinesPanel, isLinesPanelOpen,
   openFontMenu, closeFontMenu,
   openHandleMenu, closeHandleMenu,
   bindFloatbar, bindMenus,

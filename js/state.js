@@ -225,8 +225,7 @@ async function load(){
   S.ui.selectedId    = null;
   S.ui.selectedRange = null;
 
-  /* Пересобираем backlinks для всех документов после загрузки,
-     чтобы вычистить устаревшие записи. */
+  /* Пересобираем backlinks для всех документов после загрузки */
   try {
     for (const id of Object.keys(S.documents)){
       rebuildBacklinks(id);
@@ -240,12 +239,18 @@ function saveNow(){
   const doc = getActiveDoc();
   if (!doc) return;
 
+  /* ПАТЧ 2.3.1: синхронизируем строки со content перед сохранением */
+  for (const b of doc.blocks || []){
+    if (U.LINE_TYPES && U.LINE_TYPES.has(b.type)){
+      U.syncBlockLines(b);
+    }
+  }
+
   U.recomputeDocStats(doc);
 
   DB.saveDocument(doc)
     .then(() => {
       markSaved();
-      /* Обновляем обратный индекс для активного документа */
       rebuildBacklinks(doc.id);
     })
     .catch(err => {
@@ -401,6 +406,9 @@ async function setActiveDoc(id){
 
   const prev = getActiveDoc();
   if (prev){
+    for (const b of prev.blocks || []){
+      if (U.LINE_TYPES && U.LINE_TYPES.has(b.type)) U.syncBlockLines(b);
+    }
     U.recomputeDocStats(prev);
     await DB.saveDocument(prev);
   }
@@ -432,11 +440,10 @@ async function renameDocument(id, name){
   doc.title = newTitle;
   doc.updatedAt = now();
 
-  /* ПАТЧ 2.2: автопереименование ссылок [[Старое]] и [[Старое#anchor]] → [[Новое]...] */
+  /* ПАТЧ 2.3.1: автопереименование с поддержкой тройной адресации */
   if (oldTitle && oldTitle !== newTitle){
     const escapedOld = oldTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    /* Ловим [[Старое]] и [[Старое#anchor]] — сохраняем анкор */
-    const reNoAnchor = new RegExp(`\\[\\[\\s*${escapedOld}\\s*\\]\\]`, "g");
+    const reNoAnchor   = new RegExp(`\\[\\[\\s*${escapedOld}\\s*\\]\\]`, "g");
     const reWithAnchor = new RegExp(`\\[\\[\\s*${escapedOld}\\s*#([^\\]]+)\\]\\]`, "g");
 
     const replaceIn = (html) => {
@@ -449,6 +456,7 @@ async function renameDocument(id, name){
     for (const other of Object.values(S.documents)){
       if (other.id === id) continue;
       let changed = false;
+
       for (const b of other.blocks || []){
         if (b.type === "code") continue;
 
@@ -474,7 +482,18 @@ async function renameDocument(id, name){
             }
           }
         }
+
+        /* ПАТЧ 2.3.1: строки */
+        if (Array.isArray(b.lines)){
+          for (const ln of b.lines){
+            if (typeof ln.text === "string"){
+              const next = replaceIn(ln.text);
+              if (next !== ln.text){ ln.text = next; changed = true; }
+            }
+          }
+        }
       }
+
       if (changed){
         other.updatedAt = now();
         try { await DB.saveDocument(other); } catch(e){}
@@ -491,7 +510,6 @@ async function renameDocument(id, name){
     }
   }
 
-  /* Пересобираем backlinks для всех, чтобы обновить ссылки */
   for (const other of Object.values(S.documents)){
     try { rebuildBacklinks(other.id); } catch(e){}
   }
@@ -515,7 +533,30 @@ async function setDocumentField(id, key, value){
 async function duplicateDocument(id){
   const src = S.documents[id];
   if (!src) return null;
-  const copy = normalizeDocument(JSON.parse(JSON.stringify(src)));
+
+  /* ПАТЧ 2.3.1: глубокая копия с регенерацией lineId и customId */
+  const clone = JSON.parse(JSON.stringify(src));
+
+  /* Перегенерировать lineId (не оставлять те же) */
+  if (Array.isArray(clone.blocks)){
+    for (const b of clone.blocks){
+      if (Array.isArray(b.lines)){
+        for (const ln of b.lines){
+          ln.id = U.shortId();
+          ln.customId = "";
+          if (Array.isArray(ln.fragments)){
+            ln.fragments = ln.fragments.map(f => ({
+              ...f,
+              id: U.shortId(),
+              customId: ""
+            }));
+          }
+        }
+      }
+    }
+  }
+
+  const copy = normalizeDocument(clone);
   copy.id = uid();
   copy.title = (src.title || "Без названия") + " (копия)";
   copy.createdAt = now();
@@ -542,7 +583,6 @@ async function trashDocument(id){
     if (next) await setActiveDoc(next.id);
   }
 
-  /* Пересобираем backlinks у тех, кто ссылался на этот документ */
   for (const other of Object.values(S.documents)){
     try { rebuildBacklinks(other.id); } catch(e){}
   }
@@ -568,9 +608,7 @@ async function purgeDocument(id){
   delete S.documents[id];
   S.ui.openTabs = S.ui.openTabs.filter(x => x !== id);
 
-  /* Чистим backlinks, где этот документ был target */
   delete S.backlinks[id];
-  /* И где он был источником */
   for (const k of Object.keys(S.backlinks)){
     S.backlinks[k] = S.backlinks[k].filter(x => x.fromId !== id);
     if (!S.backlinks[k].length) delete S.backlinks[k];
@@ -693,8 +731,6 @@ function listDocuments({ section = S.ui.section, folderId = undefined, query = "
    Wikilinks / backlinks
    ============================================================ */
 
-/* Резолвер имени → документ. Возвращает { doc, count } либо null.
-   count — сколько всего документов с таким именем (для тоста). */
 function resolveDocByName(name){
   if (!name) return null;
   const target = String(name).trim().toLowerCase();
@@ -710,30 +746,44 @@ function resolveDocByName(name){
   return { doc: matches[0], count: matches.length };
 }
 
-/* ПАТЧ 2.2: извлекает [[...]] из блока — возвращает [{name, anchor}].
-   extractWikilinks уже возвращает объекты, здесь только сборка. */
+/* ПАТЧ 2.3.1: возвращает [{name, blockAnchor, lineAnchor, fragmentAnchor}] */
 function extractWikilinksFromBlock(b){
   const out = [];
   if (!b || b.type === "code") return out;
 
+  const pushAll = (html) => {
+    U.extractWikilinks(html).forEach(l => out.push(l));
+  };
+
   if (b.type === "table" && Array.isArray(b.rows)){
     for (const row of b.rows){
       for (const cell of row){
-        U.extractWikilinks(cell || "").forEach(l => out.push(l));
+        pushAll(cell || "");
       }
     }
   } else if (b.type === "columns" && Array.isArray(b.content)){
     for (const col of b.content){
-      U.extractWikilinks(col || "").forEach(l => out.push(l));
+      pushAll(col || "");
+    }
+  } else if (Array.isArray(b.lines) && b.lines.length){
+    /* ПАТЧ 2.3.1: строки */
+    for (const ln of b.lines){
+      pushAll(ln.text || "");
     }
   } else if (typeof b.content === "string"){
-    U.extractWikilinks(b.content).forEach(l => out.push(l));
+    pushAll(b.content);
   }
   return out;
 }
 
-/* ПАТЧ 2.2: пересобирает backlinks с учётом анкоров.
-   Формат: S.backlinks[targetId] = [{ fromId, snippet, anchor, at }] */
+/* ПАТЧ 2.3.1: собираем анкор-строку для backlink */
+function anchorToString(blockAnchor, lineAnchor, fragmentAnchor){
+  return [blockAnchor, lineAnchor, fragmentAnchor]
+    .filter(Boolean)
+    .join("#");
+}
+
+/* ПАТЧ 2.3.1: пересобирает backlinks с учётом тройной адресации */
 function rebuildBacklinks(docId){
   const doc = S.documents[docId];
   if (!doc) return;
@@ -744,7 +794,7 @@ function rebuildBacklinks(docId){
     if (!S.backlinks[targetId].length) delete S.backlinks[targetId];
   }
 
-  /* 2. Собираем ссылки [{name, anchor}] из блоков */
+  /* 2. Собираем ссылки */
   const links = [];
   for (const b of doc.blocks || []){
     extractWikilinksFromBlock(b).forEach(l => links.push(l));
@@ -752,29 +802,29 @@ function rebuildBacklinks(docId){
 
   /* 3. Резолвим в id и пишем */
   const snippet = (doc.title || "Без названия").slice(0, 80);
-  const seenPairs = new Set();  /* docId+targetId+anchor — чтобы не дублировать */
+  const seen = new Set();
 
-  for (const { name, anchor } of links){
+  for (const { name, blockAnchor, lineAnchor, fragmentAnchor } of links){
     const r = resolveDocByName(name);
     if (!r) continue;
     const targetId = r.doc.id;
     if (targetId === docId) continue;
 
-    const pairKey = targetId + "\u0000" + (anchor || "");
-    if (seenPairs.has(pairKey)) continue;
-    seenPairs.add(pairKey);
+    const anchorStr = anchorToString(blockAnchor, lineAnchor, fragmentAnchor);
+    const pairKey = targetId + "\u0000" + anchorStr;
+    if (seen.has(pairKey)) continue;
+    seen.add(pairKey);
 
     if (!S.backlinks[targetId]) S.backlinks[targetId] = [];
     S.backlinks[targetId].push({
       fromId:  docId,
       snippet: snippet,
-      anchor:  anchor || "",
+      anchor:  anchorStr,     /* "block#line#fragment" или "" */
       at:      now()
     });
   }
 }
 
-/* Backlinks указанного документа — только живые, не trashed, отсортированы */
 function getBacklinks(docId){
   const list = S.backlinks[docId] || [];
   return list
@@ -783,7 +833,7 @@ function getBacklinks(docId){
     .sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 
-/* ПАТЧ 2.2: findUnlinkedMentions — links теперь [{name, anchor}] */
+/* ПАТЧ 2.3.1: findUnlinkedMentions — links теперь [{name, blockAnchor,...}] */
 function findUnlinkedMentions(docId){
   const doc = S.documents[docId];
   if (!doc) return [];
@@ -808,12 +858,13 @@ function findUnlinkedMentions(docId){
         for (const row of b.rows) for (const cell of row) texts.push(cell || "");
       } else if (b.type === "columns" && Array.isArray(b.content)){
         for (const col of b.content) texts.push(col || "");
+      } else if (Array.isArray(b.lines) && b.lines.length){
+        for (const ln of b.lines) texts.push(ln.text || "");
       } else if (typeof b.content === "string"){
         texts.push(b.content);
       }
 
       for (const html of texts){
-        /* ПАТЧ 2.2: links — [{name, anchor}]; проверяем по name */
         const links = U.extractWikilinks(html);
         if (links.some(l => (l.name || "").trim().toLowerCase() === needle)) continue;
 
@@ -828,34 +879,59 @@ function findUnlinkedMentions(docId){
   return out;
 }
 
-/* ПАТЧ 2.2: скролл к блоку с данным id / customId + временная подсветка.
-   Ищет по customId, потом по id. */
-function scrollToAnchor(docId, anchor){
-  if (!anchor) return;
+/* ============================================================
+   ПАТЧ 2.3.1: scrollToAnchorPath — переход к блоку/строке/фрагменту
+   ============================================================ */
+
+/* Прокручивает к блоку, строке или фрагменту в указанном документе.
+   - blockAnchor: id или customId блока
+   - lineAnchor: id или customId строки
+   - fragmentAnchor: id фрагмента (этап 2.3.4, пока игнорируется) */
+function scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor){
+  if (!blockAnchor && !lineAnchor) return;
   const doc = S.documents[docId];
   if (!doc) return;
 
-  /* Ищем сначала по customId, потом по id */
-  let block = (doc.blocks || []).find(b => b.customId && b.customId === anchor);
-  if (!block) block = (doc.blocks || []).find(b => b.id === anchor);
+  /* Ищем блок по customId → id */
+  let block = null;
+  if (blockAnchor){
+    block = (doc.blocks || []).find(b => b.customId && b.customId === blockAnchor);
+    if (!block) block = (doc.blocks || []).find(b => b.id === blockAnchor);
+  }
   if (!block) return;
 
-  /* Ждём следующий кадр (после setActiveDoc рендер уже произошёл) */
   requestAnimationFrame(() => {
-    const el = document.querySelector(`#editor .block[data-id="${block.id}"]`);
-    if (!el) return;
-    try {
-      el.scrollIntoView({ behavior: "smooth", block: "center" });
-    } catch(e){
-      el.scrollIntoView();
+    const blockEl = document.querySelector(`#editor .block[data-id="${block.id}"]`);
+    if (!blockEl) return;
+
+    let targetEl = blockEl;
+
+    /* Если указана строка — ищем внутри блока */
+    if (lineAnchor){
+      const lineEl = blockEl.querySelector(`.line[data-line-id="${lineAnchor}"]`);
+      if (lineEl) targetEl = lineEl;
     }
 
-    /* Перезапуск анимации: убираем класс, reflow, добавляем обратно */
-    el.classList.remove("anchor-highlight");
-    void el.offsetWidth;
-    el.classList.add("anchor-highlight");
-    setTimeout(() => el.classList.remove("anchor-highlight"), 1600);
+    try {
+      targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+    } catch(e){
+      targetEl.scrollIntoView();
+    }
+
+    /* Подсветка */
+    targetEl.classList.remove("anchor-highlight");
+    void targetEl.offsetWidth;
+    targetEl.classList.add("anchor-highlight");
+    setTimeout(() => targetEl.classList.remove("anchor-highlight"), 1600);
   });
+}
+
+/* Обратная совместимость: старая подпись scrollToAnchor(docId, anchor).
+   Если anchor содержит # — разбираем как block#line#fragment. */
+function scrollToAnchor(docId, anchor){
+  if (!anchor) return;
+  const parts = String(anchor).split("#").map(p => p.trim());
+  return scrollToAnchorPath(docId, parts[0] || "", parts[1] || "", parts[2] || "");
 }
 
 /* ---------- История навигации ---------- */
@@ -953,6 +1029,9 @@ return {
   resolveDocByName, rebuildBacklinks, getBacklinks, findUnlinkedMentions,
   /* ПАТЧ 2.2 */
   scrollToAnchor,
+  /* ПАТЧ 2.3.1 */
+  scrollToAnchorPath,
+  anchorToString,
 
   historyBack, historyForward,
   setUI,

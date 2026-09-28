@@ -258,7 +258,13 @@
     </div>
   </div>
 
-  <!-- ПАТЧ 2.3.0: секция «Маркер блока» удалена -->
+  <!-- ПАТЧ 2.3.1: секция «Строки» блока -->
+  <div class="hm-section" data-section="lines" hidden>
+    <div class="hm-label">Строки блока</div>
+    <div class="hm-lines-list" data-group="lines-list">
+      <!-- заполняется динамически через fillLinesList() -->
+    </div>
+  </div>
 
   <div class="hm-section" data-section="marker" hidden>
     <div class="hm-label">Маркер списка</div>
@@ -385,6 +391,13 @@
 <input id="file" type="file" accept="image/*" hidden>
 
 <div class="wikilink-popover" id="wikilink-popover" role="listbox" aria-label="Автодополнение ссылок"></div>
+
+<!-- ПАТЧ 2.3.1: панель строк блока (Ctrl+F) -->
+<div class="lines-panel" id="lines-panel" style="display:none;">
+  <div class="lsp-head" id="lines-panel-head"></div>
+  <div class="lsp-list" id="lines-panel-list"></div>
+  <button class="lsp-close" data-action="close" type="button" title="Закрыть (Esc)">✕</button>
+</div>
 
 <div class="settings-modal" id="settings-modal"></div>
 

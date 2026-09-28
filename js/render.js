@@ -1,5 +1,5 @@
 /* ============================================================
-   render.js
+   render.js — рендер блоков, строк, keyLine
    Зависит от: utils, state
    ============================================================ */
 
@@ -11,7 +11,11 @@ window.App.render = (() => {
 const U = window.App.utils;
 const {
   $, $$, el, escape, sanitize,
-  block: newBlock
+  block: newBlock,
+  line: newLine,
+  LINE_TYPES,
+  syncBlockLines,
+  getBlockHTML
 } = U;
 
 const St = () => window.App.state.S;
@@ -49,9 +53,12 @@ function toSourceHTML(html){
   const tmp = document.createElement("div");
   tmp.innerHTML = html;
   tmp.querySelectorAll("a.wikilink").forEach(a => {
-    const name   = a.getAttribute("data-wikilink") || a.textContent || "";
-    const anchor = a.getAttribute("data-wikilink-anchor") || "";
-    const full   = anchor ? `${name}#${anchor}` : name;
+    const name     = a.getAttribute("data-wikilink") || a.textContent || "";
+    const bAnchor  = a.getAttribute("data-wikilink-block-anchor") || "";
+    const lAnchor  = a.getAttribute("data-wikilink-line-anchor") || "";
+    const fAnchor  = a.getAttribute("data-wikilink-fragment-anchor") || "";
+    const anchors  = [bAnchor, lAnchor, fAnchor].filter(Boolean).join("#");
+    const full     = anchors ? `${name}#${anchors}` : name;
     a.replaceWith(document.createTextNode(`[[${full}]]`));
   });
   return tmp.innerHTML;
@@ -104,17 +111,419 @@ function cleanupEmptyLis(body){
   });
 }
 
-/* ---------- Blocks ---------- */
+/* ============================================================
+   ПАТЧ 2.3.1 + 2.3.2: рендер строк внутри блока (LINE_TYPES)
+   ============================================================ */
+
+/* Рендерит одну строку как <div class="line" contenteditable>
+   - b    — блок-родитель
+   - ln   — объект строки (line)
+   - i    — индекс строки в b.lines
+   ПАТЧ 2.3.2:
+     - setAttribute("contenteditable","true") для надёжности
+     - пустые строки рендерятся как "<br>" (для каретки) */
+function renderLine(b, ln, i){
+  const lineEl = el("div", "line");
+  lineEl.dataset.lineId = ln.id;
+  lineEl.dataset.lineIndex = i;
+  if (ln.customId) lineEl.dataset.lineAnchor = ln.customId;
+
+  lineEl.setAttribute("contenteditable", "true");
+  lineEl.spellcheck = (b.type !== "code");
+  lineEl.dir = "auto";
+  lineEl.dataset.placeholder = i === 0
+    ? (b.type === "code" ? "Код…" : "Пишите здесь…")
+    : "";
+
+  /* ПАТЧ 2.3.2: пустая строка → <br> для каретки */
+  const text = ln.text || "";
+  if (text && text.trim()){
+    lineEl.innerHTML = toDisplayHTML(text);
+  } else {
+    lineEl.innerHTML = "<br>";
+  }
+
+  lineEl.onfocus = () => {
+    setActive(b.id);
+    setSelectedBlock(b.id);
+  };
+
+  lineEl.oninput = () => {
+    const wasEmpty = !ln.text;
+
+    /* ПАТЧ 2.3.2: <br> как единственный child → пустая строка */
+    let html = lineEl.innerHTML;
+    if (html === "<br>" || html === "<br/>" || html === "<br />"){
+      html = "";
+    }
+    ln.text = toSourceHTML(html);
+    b.content = b.lines.map(l => l.text).join("<br>");
+
+    try { window.App.wikilinkPopover?.onInput(b, lineEl); } catch(e){}
+
+    save();
+    if (wasEmpty) commit(snapshot());
+    else          commitDebounced(snapshot());
+  };
+
+  lineEl.onkeydown = (e) => keyLine(e, b, ln, i, lineEl);
+  lineEl.onpaste = makePasteHandler(lineEl);
+
+  return lineEl;
+}
+
+/* ---------- Ключевые хелперы для строк ---------- */
+
+function caretAtStart(el){
+  const sel = getSelection();
+  if (!sel.rangeCount) return false;
+  const r = sel.getRangeAt(0);
+  if (!r.collapsed) return false;
+  if (!el.contains(r.startContainer)) return false;
+
+  const test = r.cloneRange();
+  try { test.setStart(el, 0); } catch(e){ return false; }
+  return test.toString().length === 0;
+}
+
+function caretAtEnd(el){
+  const sel = getSelection();
+  if (!sel.rangeCount) return false;
+  const r = sel.getRangeAt(0);
+  if (!r.collapsed) return false;
+  if (!el.contains(r.startContainer)) return false;
+
+  const test = r.cloneRange();
+  try { test.setEnd(el, el.childNodes.length); } catch(e){ return false; }
+  return test.toString().length === el.innerText.length;
+}
+
+function placeCaretStart(el){
+  const r = document.createRange();
+  r.setStart(el, 0);
+  r.collapse(true);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+
+function placeCaretEnd(el){
+  const r = document.createRange();
+  r.selectNodeContents(el);
+  r.collapse(false);
+  const s = getSelection();
+  s.removeAllRanges();
+  s.addRange(r);
+}
+
+/* ---------- keyLine — обработчик клавиш внутри строки ---------- */
+
+function keyLine(e, b, ln, i, lineEl){
+  /* Поповер [[ перехватывает ввод */
+  if (window.App.wikilinkPopover && window.App.wikilinkPopover.isOpen()){
+    if (window.App.wikilinkPopover.handleKey(e, b, lineEl)) return;
+  }
+
+  const isMod = e.ctrlKey || e.metaKey;
+
+  /* Ctrl+Enter (без Shift) → новый блок после текущего */
+  if (isMod && !e.shiftKey && e.key === "Enter"){
+    e.preventDefault();
+    const blocks = window.App.state.getBlocks();
+    const idx = blocks.findIndex(x => x.id === b.id);
+    add("text", idx + 1);
+    return;
+  }
+
+  /* Ctrl+Shift+Enter → пропускаем, обрабатывается в hotkeys.js (line:new) */
+
+  /* Ctrl+Backspace → удалить текущую строку (не блок) */
+  if (isMod && e.key === "Backspace"){
+    e.preventDefault();
+    if (b.lines.length > 1){
+      const old = snapshot();
+      b.lines.splice(i, 1);
+      b.content = b.lines.map(l => l.text).join("<br>");
+      commit(old);
+      render();
+
+      const prevI = Math.max(0, i - 1);
+      setTimeout(() => {
+        const prevEl = document.querySelector(
+          `#editor .block[data-id="${b.id}"] .line[data-line-index="${prevI}"]`
+        );
+        if (prevEl){
+          placeCaretEnd(prevEl);
+          prevEl.focus();
+        }
+      }, 0);
+    } else {
+      const old = snapshot();
+      ln.text = "";
+      b.content = "";
+      commit(old);
+      render();
+    }
+    return;
+  }
+
+  /* Enter (без модификаторов) → split строки на две.
+     Два независимых Range с cloneContents — корректный HTML. */
+  if (e.key === "Enter" && !e.shiftKey){
+    e.preventDefault();
+    const sel = getSelection();
+    if (!sel.rangeCount) return;
+    const r = sel.getRangeAt(0);
+    if (!lineEl.contains(r.startContainer)) return;
+
+    /* Левая часть — от начала строки до caret */
+    const leftRange = document.createRange();
+    leftRange.setStart(lineEl, 0);
+    leftRange.setEnd(r.startContainer, r.startOffset);
+    const leftFrag = leftRange.cloneContents();
+    const leftDiv = document.createElement("div");
+    leftDiv.appendChild(leftFrag);
+    const beforeHTML = leftDiv.innerHTML;
+
+    /* Правая часть — от caret до конца строки */
+    const rightRange = document.createRange();
+    rightRange.setStart(r.startContainer, r.startOffset);
+    rightRange.setEnd(lineEl, lineEl.childNodes.length);
+    const rightFrag = rightRange.cloneContents();
+    const rightDiv = document.createElement("div");
+    rightDiv.appendChild(rightFrag);
+    const afterHTML = rightDiv.innerHTML;
+
+    const old = snapshot();
+
+    ln.text = beforeHTML;
+
+    const newLn = newLine(afterHTML);
+    b.lines.splice(i + 1, 0, newLn);
+    b.content = b.lines.map(l => l.text).join("<br>");
+
+    commit(old);
+    render();
+
+    setTimeout(() => {
+      const newEl = document.querySelector(
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${newLn.id}"]`
+      );
+      if (newEl){
+        const rr = document.createRange();
+        rr.setStart(newEl, 0);
+        rr.collapse(true);
+        const s = getSelection();
+        s.removeAllRanges();
+        s.addRange(rr);
+        newEl.focus();
+      }
+    }, 0);
+    return;
+  }
+
+  /* Backspace в начале строки → merge с предыдущей */
+  if (e.key === "Backspace" && caretAtStart(lineEl)){
+    if (i === 0){
+      const blocks = window.App.state.getBlocks();
+      const bIdx = blocks.findIndex(x => x.id === b.id);
+      if (bIdx > 0){
+        e.preventDefault();
+        const prevBlock = blocks[bIdx - 1];
+        if (LINE_TYPES.has(prevBlock.type) && Array.isArray(prevBlock.lines)){
+          const old = snapshot();
+          const movedLines = b.lines.map(l => ({ ...l }));
+          prevBlock.lines.push(...movedLines);
+          prevBlock.content = prevBlock.lines.map(l => l.text).join("<br>");
+          blocks.splice(bIdx, 1);
+          commit(old);
+          render();
+          setTimeout(() => {
+            const el2 = document.querySelector(
+              `#editor .block[data-id="${prevBlock.id}"] .line[data-line-id="${movedLines[0].id}"]`
+            );
+            if (el2){ placeCaretStart(el2); el2.focus(); }
+          }, 0);
+        } else {
+          const el2 = document.querySelector(
+            `#editor .block[data-id="${prevBlock.id}"] [contenteditable]`
+          );
+          if (el2){
+            placeCaretEnd(el2);
+            el2.focus();
+          }
+        }
+        return;
+      } else {
+        return;
+      }
+    }
+    /* Merge с предыдущей строкой */
+    e.preventDefault();
+    const prevLn = b.lines[i - 1];
+    const curText = ln.text || "";
+
+    const old = snapshot();
+    const oldPrevText = prevLn.text || "";
+    prevLn.text = oldPrevText + curText;
+    b.lines.splice(i, 1);
+    b.content = b.lines.map(l => l.text).join("<br>");
+    commit(old);
+    render();
+
+    setTimeout(() => {
+      const prevEl2 = document.querySelector(
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${prevLn.id}"]`
+      );
+      if (prevEl2){
+        const tmp = document.createElement("div");
+        tmp.innerHTML = oldPrevText;
+        const oldLen = tmp.innerText.length;
+        try {
+          const r = document.createRange();
+          const walker = document.createTreeWalker(prevEl2, NodeFilter.SHOW_TEXT);
+          let acc = 0;
+          let targetNode = null;
+          let targetOffset = 0;
+          let node;
+          while ((node = walker.nextNode())){
+            if (acc + node.textContent.length >= oldLen){
+              targetNode = node;
+              targetOffset = oldLen - acc;
+              break;
+            }
+            acc += node.textContent.length;
+          }
+          if (targetNode){
+            r.setStart(targetNode, targetOffset);
+            r.collapse(true);
+            const s = getSelection();
+            s.removeAllRanges();
+            s.addRange(r);
+          } else {
+            placeCaretEnd(prevEl2);
+          }
+        } catch(_){
+          placeCaretEnd(prevEl2);
+        }
+        prevEl2.focus();
+      }
+    }, 0);
+    return;
+  }
+
+  /* Delete в конце строки → merge со следующей */
+  if (e.key === "Delete" && caretAtEnd(lineEl)){
+    if (i >= b.lines.length - 1){
+      const blocks = window.App.state.getBlocks();
+      const bIdx = blocks.findIndex(x => x.id === b.id);
+      const nextBlock = blocks[bIdx + 1];
+      if (nextBlock && LINE_TYPES.has(nextBlock.type) && Array.isArray(nextBlock.lines)){
+        e.preventDefault();
+        const old = snapshot();
+        const movedLines = nextBlock.lines.map(l => ({ ...l }));
+        b.lines.push(...movedLines);
+        b.content = b.lines.map(l => l.text).join("<br>");
+        blocks.splice(bIdx + 1, 1);
+        commit(old);
+        render();
+      }
+      return;
+    }
+    e.preventDefault();
+    const nextLn = b.lines[i + 1];
+    const old = snapshot();
+    ln.text = (ln.text || "") + (nextLn.text || "");
+    b.lines.splice(i + 1, 1);
+    b.content = b.lines.map(l => l.text).join("<br>");
+    commit(old);
+    render();
+    setTimeout(() => {
+      const el2 = document.querySelector(
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${ln.id}"]`
+      );
+      if (el2){ placeCaretEnd(el2); el2.focus(); }
+    }, 0);
+    return;
+  }
+
+  /* ↑ в начале строки → на предыдущую строку */
+  if (e.key === "ArrowUp" && caretAtStart(lineEl)){
+    if (i > 0){
+      e.preventDefault();
+      const prevEl = document.querySelector(
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${b.lines[i-1].id}"]`
+      );
+      if (prevEl){ placeCaretEnd(prevEl); prevEl.focus(); }
+      return;
+    }
+    const blocks = window.App.state.getBlocks();
+    const bIdx = blocks.findIndex(x => x.id === b.id);
+    if (bIdx > 0){
+      const prevBlock = blocks[bIdx - 1];
+      const prevEditable = document.querySelector(
+        `#editor .block[data-id="${prevBlock.id}"] [contenteditable]`
+      );
+      if (prevEditable){
+        e.preventDefault();
+        const prevLines = prevBlock.lines || [];
+        if (prevLines.length){
+          const lastLineEl = document.querySelector(
+            `#editor .block[data-id="${prevBlock.id}"] .line[data-line-id="${prevLines[prevLines.length-1].id}"]`
+          );
+          if (lastLineEl){ placeCaretEnd(lastLineEl); lastLineEl.focus(); return; }
+        }
+        placeCaretEnd(prevEditable);
+        prevEditable.focus();
+      }
+    }
+    return;
+  }
+
+  /* ↓ в конце строки → на следующую строку */
+  if (e.key === "ArrowDown" && caretAtEnd(lineEl)){
+    if (i < b.lines.length - 1){
+      e.preventDefault();
+      const nextEl = document.querySelector(
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${b.lines[i+1].id}"]`
+      );
+      if (nextEl){ placeCaretStart(nextEl); nextEl.focus(); }
+      return;
+    }
+    const blocks = window.App.state.getBlocks();
+    const bIdx = blocks.findIndex(x => x.id === b.id);
+    const nextBlock = blocks[bIdx + 1];
+    if (nextBlock){
+      const nextEditable = document.querySelector(
+        `#editor .block[data-id="${nextBlock.id}"] [contenteditable]`
+      );
+      if (nextEditable){
+        e.preventDefault();
+        const nextLines = nextBlock.lines || [];
+        if (nextLines.length){
+          const firstLineEl = document.querySelector(
+            `#editor .block[data-id="${nextBlock.id}"] .line[data-line-id="${nextLines[0].id}"]`
+          );
+          if (firstLineEl){ placeCaretStart(firstLineEl); firstLineEl.focus(); return; }
+        }
+        placeCaretStart(nextEditable);
+        nextEditable.focus();
+      }
+    }
+    return;
+  }
+}
+
+/* ============================================================
+   Блоки
+   ============================================================ */
 
 function renderBlock(b){
   const w = el("div", "block");
   w.dataset.id = b.id;
   w.dataset.type = b.type;
 
-  /* ПАТЧ 2.2: data-anchor для кастомного ID блока */
   if (b.customId) w.dataset.anchor = b.customId;
-
-  /* ПАТЧ 2.3.0: убран data-block-marker и --block-marker-color */
 
   if (b.bg)     w.dataset.bg = b.bg;
   if (b.font)   w.dataset.font = b.font;
@@ -175,68 +584,75 @@ function renderBlock(b){
     return w;
   }
 
-  if (b.type === "todo"){
-    body = el("div", "body todo " + (b.checked ? "done" : ""));
+  /* ============================================================
+     ПАТЧ 2.3.1: LINE_TYPES — рендерим через .line
+     ============================================================ */
 
-    const label = el("label", "todo-box");
-    const c = document.createElement("input");
-    c.type = "checkbox";
-    c.checked = !!b.checked;
-    c.onchange = () => {
-      const old = snapshot();
-      b.checked = c.checked;
-      commit(old);
-      render();
-    };
-    label.append(c);
-    body.append(label);
+  if (LINE_TYPES.has(b.type)){
+    if (!Array.isArray(b.lines) || !b.lines.length){
+      syncBlockLines(b);
+    }
 
-    const t = el("div", "todo-text");
-    t.contentEditable = true;
-    t.spellcheck = true;
-    t.dir = "auto";
-    t.innerHTML = toDisplayHTML(b.content || "");
-    t.style.flex = "1";
-    t.style.minWidth = "0";
-    t.style.outline = "0";
-    t.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
-    t.oninput = () => {
-      const wasEmpty = b.content === "";
-      b.content = toSourceHTML(t.innerHTML);
+    const tagName =
+      b.type === "h1" ? "h1" :
+      b.type === "h2" ? "h2" :
+      b.type === "h3" ? "h3" : "div";
 
-      try { window.App.wikilinkPopover?.onInput(b, t); } catch(e){}
+    body = el(tagName,
+      "body " +
+      (b.type === "quote" ? "quote " : "") +
+      (b.type === "code"  ? "code "  : "") +
+      (b.type === "todo"  ? "todo "  : "") +
+      (b.type === "todo" && b.checked ? "done" : "")
+    );
+    body.dataset.linesBlock = "1";
 
-      if (wasEmpty) commit(snapshot());
-      else          commitDebounced(snapshot());
-      save();
-    };
-    t.onpaste = makePasteHandler(t);
-    body.append(t);
+    /* todo — чекбокс перед строками */
+    if (b.type === "todo"){
+      const label = el("label", "todo-box");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = !!b.checked;
+      c.onchange = () => {
+        const old = snapshot();
+        b.checked = c.checked;
+        commit(old);
+        render();
+      };
+      label.append(c);
+      body.append(label);
+    }
 
+    /* Контейнер для строк */
+    const linesWrap = el("div", "lines");
+    linesWrap.style.flex = "1";
+    linesWrap.style.minWidth = "0";
+
+    b.lines.forEach((ln, i) => {
+      linesWrap.append(renderLine(b, ln, i));
+    });
+
+    body.append(linesWrap);
     w.append(body);
     return w;
   }
 
+  /* ============================================================
+     Остальные типы (ul, ol, text без lines)
+     ============================================================ */
+
   const tag =
-    b.type === "h1" ? "h1" :
-    b.type === "h2" ? "h2" :
-    b.type === "h3" ? "h3" :
     b.type === "ul" ? "ul" :
     b.type === "ol" ? "ol" : "div";
 
-  body = el(tag,
-    "body " +
-    (b.type === "quote" ? "quote" : "") +
-    (b.type === "code"  ? " code"  : "")
-  );
+  body = el(tag, "body");
 
-  body.innerHTML = toDisplayHTML(b.content || "");
+  body.innerHTML = toDisplayHTML(getBlockHTML(b));
 
   body.contentEditable = true;
   body.spellcheck = b.type !== "code";
   body.dir = "auto";
-  body.dataset.placeholder =
-    b.type === "code" ? "Код…" : "Пишите здесь…";
+  body.dataset.placeholder = "Пишите здесь…";
 
   body.onfocus = () => { setActive(b.id); setSelectedBlock(b.id); };
   body.oninput = () => {
@@ -249,6 +665,7 @@ function renderBlock(b){
       const old = snapshot();
       b.type = "text";
       b.content = "";
+      b.lines = [];
       commit(old);
       render();
       setSelectedBlock(b.id);
@@ -350,8 +767,7 @@ function focusCell(b, r, c){
 }
 
 /* ============================================================
-   ПАТЧ 2.1: Columns — новые настройки (widths, gap, valign),
-   панель управления сверху блока (A), drag-разделитель
+   ПАТЧ 2.1: Columns
    ============================================================ */
 
 function buildColsTemplate(widths){
@@ -371,7 +787,6 @@ function renderColumns(b){
   }
   if (!Number.isFinite(b.gap)) b.gap = 14;
 
-  /* CSS-переменные */
   g.style.setProperty("--cols-gap", b.gap + "px");
   g.style.setProperty("--cols-template", buildColsTemplate(b.widths));
 
@@ -394,7 +809,6 @@ function renderColumns(b){
     g.append(c);
   }
 
-  /* Resizer'ы между колонками */
   if (b.cols > 1){
     for (let i = 0; i < b.cols - 1; i++){
       const rz = el("div", "col-resizer");
@@ -406,20 +820,16 @@ function renderColumns(b){
     }
   }
 
-  /* Панель управления (A: сверху блока) */
   const toolbar = buildColsToolbar(b);
-
   box.append(toolbar);
   box.append(g);
 
   return box;
 }
 
-/* Панель управления колонками */
 function buildColsToolbar(b){
   const bar = el("div", "cols-toolbar");
 
-  /* Кол-во колонок */
   [2, 3, 4].forEach(n => {
     const btn = document.createElement("button");
     btn.type = "button";
@@ -444,11 +854,9 @@ function buildColsToolbar(b){
     bar.append(btn);
   });
 
-  /* Разделитель */
   const sep1 = el("span", "ct-sep");
   bar.append(sep1);
 
-  /* Пресеты пропорций для текущего числа колонок */
   const presets = {
     2: [
       { label: "1:1",  w: [1,1] },
@@ -472,7 +880,6 @@ function buildColsToolbar(b){
     btn.type = "button";
     btn.title = "Пропорции " + p.label;
 
-    /* Мини-превью */
     const ratio = el("span", "ct-ratio");
     p.w.forEach(w => {
       const seg = document.createElement("span");
@@ -495,11 +902,9 @@ function buildColsToolbar(b){
     bar.append(btn);
   });
 
-  /* Разделитель */
   const sep2 = el("span", "ct-sep");
   bar.append(sep2);
 
-  /* Valign */
   const valigns = [
     ["top",    "По верху",   '<path d="M3 5h18"/><path d="M3 10h10"/><path d="M3 15h14"/>'],
     ["center", "По центру",  '<path d="M3 5h14"/><path d="M3 10h18"/><path d="M3 15h14"/>'],
@@ -531,8 +936,6 @@ function isSameWidths(a, b){
   const sb = b.reduce((x,y)=>x+y,0) || 1;
   return a.every((w, i) => Math.abs(w/sa - b[i]/sb) < 0.03);
 }
-
-/* ---------- ПАТЧ 2.1: drag-разделитель ---------- */
 
 let _colsDrag = null;
 
@@ -648,7 +1051,6 @@ function render(){
   document.documentElement.dataset.theme =
     St().theme === "paper" ? "" : St().theme;
 
-  /* Gap-зоны между блоками */
   const blockEls = [...editor.querySelectorAll(".block")];
   blockEls.forEach((w, i) => {
     if (i > 0){
@@ -660,7 +1062,6 @@ function render(){
     }
   });
 
-  /* Add-block-zone под последним */
   const last = blockEls[blockEls.length - 1];
   const lastId = last?.dataset.id || null;
   const addZone = document.createElement("div");
@@ -696,7 +1097,6 @@ function render(){
     add("text");
   });
 
-  /* Bind drag-n-drop для блоков */
   blockEls.forEach(w => {
     const handle = w.querySelector(".handle");
 
@@ -761,12 +1161,8 @@ function render(){
     });
   });
 
-  /* ПАТЧ 2.3.0: убран блок нумерации (showLineNumbers / lineNumberFormat) */
-
-  /* ПАТЧ 2.1: bind drag-разделителей колонок (один раз) */
   bindColumnResizer();
 
-  /* Панель backlinks */
   try { window.App.backlinks?.render(); } catch(e){}
 }
 
@@ -791,10 +1187,15 @@ function add(type = "text", at){
 function focusActive(){
   const id = getActiveId();
   const w = $(`[data-id="${id}"]`);
-  w?.querySelector("[contenteditable]")?.focus();
+  if (!w) return;
+
+  const firstLine = w.querySelector(".line");
+  if (firstLine){ firstLine.focus(); return; }
+
+  w.querySelector("[contenteditable]")?.focus();
 }
 
-/* ---------- Tab helpers ---------- */
+/* ---------- Tab helpers (для ul/ol) ---------- */
 
 function removeInlineTabLeft(body){
   const sel = getSelection();
@@ -846,14 +1247,14 @@ function focusLi(li){
 function checkInputRules(b, body){
   if (b.type !== "text") return false;
 
-  const onlyText =
-    [...body.childNodes].every(n =>
-      n.nodeType === Node.TEXT_NODE ||
-      (n.nodeType === Node.ELEMENT_NODE && n.tagName === "BR")
-    );
-  if (!onlyText) return false;
-
-  const t = body.innerText;
+  let t = "";
+  if (Array.isArray(b.lines) && b.lines.length){
+    const tmp = document.createElement("div");
+    tmp.innerHTML = b.lines[0].text || "";
+    t = tmp.innerText;
+  } else {
+    t = body.innerText;
+  }
 
   const rules = [
     [/^# $/,         "h1"],
@@ -873,9 +1274,14 @@ function checkInputRules(b, body){
       b.type = type;
       if (type === "ul" || type === "ol"){
         b.content = "<li><br></li>";
+        b.lines = [];
         if (type === "ul" && !b.marker) b.marker = "disc";
+      } else if (LINE_TYPES.has(type)){
+        b.lines = [newLine("")];
+        b.content = "";
       } else {
         b.content = "";
+        b.lines = [];
       }
       commit(old);
       render();
@@ -891,6 +1297,7 @@ function checkInputRules(b, body){
       const old = snapshot();
       b.type = "table";
       b.rows = [cells, Array(cells.length).fill("")];
+      b.lines = [];
       commit(old);
       render();
       setSelectedBlock(b.id);
@@ -900,13 +1307,11 @@ function checkInputRules(b, body){
   return false;
 }
 
-/* ---------- Keyboard ---------- */
+/* ---------- keyBlock — для ul/ol (не для LINE_TYPES) ---------- */
 
 function keyBlock(e, b, body){
   if (window.App.wikilinkPopover && window.App.wikilinkPopover.isOpen()){
-    if (window.App.wikilinkPopover.handleKey(e, b, body)){
-      return;
-    }
+    if (window.App.wikilinkPopover.handleKey(e, b, body)) return;
   }
 
   if (e.key === "Tab"){
@@ -943,6 +1348,7 @@ function keyBlock(e, b, body){
       const old = snapshot();
       b.type = "text";
       b.content = "";
+      b.lines = [];
       commit(old);
       render();
       setSelectedBlock(b.id);
@@ -966,15 +1372,6 @@ function keyBlock(e, b, body){
     return;
   }
 
-  if (e.key === "Enter" && !e.shiftKey &&
-      b.type !== "code" && b.type !== "ul" && b.type !== "ol"){
-    e.preventDefault();
-    const blocks = window.App.state.getBlocks();
-    const i = blocks.findIndex(x => x.id === b.id);
-    add("text", i + 1);
-    return;
-  }
-
   if (e.key === "Backspace"){
     if (b.type === "ul" || b.type === "ol"){
       const li = getCurrentLi(body);
@@ -992,6 +1389,7 @@ function keyBlock(e, b, body){
           const old = snapshot();
           b.type = "text";
           b.content = "";
+          b.lines = [];
           commit(old);
           render();
           setSelectedBlock(b.id);
@@ -1000,28 +1398,6 @@ function keyBlock(e, b, body){
         return;
       }
     }
-
-    const blocks = window.App.state.getBlocks();
-    if ((body.innerText === "" || body.innerHTML === "<br>") &&
-        blocks.length > 1){
-      e.preventDefault();
-      const i = blocks.findIndex(x => x.id === b.id);
-      const old = snapshot();
-      blocks.splice(i, 1);
-      const nextId = blocks[Math.max(0, i - 1)].id;
-      setActive(nextId);
-      commit(old);
-      render();
-      setSelectedBlock(nextId);
-      focusActive();
-      return;
-    }
-  }
-
-  if (e.key === "/" && body.innerText === ""){
-    setTimeout(() => {
-      window.App.menus.openSlash(body, b.id);
-    }, 0);
   }
 }
 
@@ -1060,7 +1436,7 @@ function applySavedFonts(){
 }
 
 /* ============================================================
-   ПАТЧ 2.2: глобальный обработчик клика по wikilink
+   Глобальный обработчик клика по wikilink
    ============================================================ */
 
 function bindWikilinkClicks(){
@@ -1071,15 +1447,17 @@ function bindWikilinkClicks(){
     e.preventDefault();
     e.stopPropagation();
 
-    const name   = link.getAttribute("data-wikilink") || link.textContent;
-    const id     = link.getAttribute("data-wikilink-id");
-    const anchor = link.getAttribute("data-wikilink-anchor") || "";
-    const S      = window.App.state.S;
+    const name       = link.getAttribute("data-wikilink") || link.textContent;
+    const id         = link.getAttribute("data-wikilink-id");
+    const bAnchor    = link.getAttribute("data-wikilink-block-anchor") || "";
+    const lAnchor    = link.getAttribute("data-wikilink-line-anchor") || "";
+    const fAnchor    = link.getAttribute("data-wikilink-fragment-anchor") || "";
+    const S          = window.App.state.S;
 
     const openDoc = (docId) => {
       Promise.resolve(window.App.state.setActiveDoc(docId)).then(() => {
-        if (anchor){
-          window.App.state.scrollToAnchor(docId, anchor);
+        if (bAnchor || lAnchor){
+          window.App.state.scrollToAnchorPath(docId, bAnchor, lAnchor, fAnchor);
         }
       });
     };
@@ -1113,12 +1491,11 @@ function bindWikilinkClicks(){
 return {
   renderBlock, renderTable, renderColumns,
   render, add, focusActive,
-  checkInputRules, keyBlock,
+  checkInputRules, keyBlock, keyLine,
   applySavedFonts, makePasteHandler,
   cleanupEmptyLis,
   toDisplayHTML, toSourceHTML,
   bindWikilinkClicks,
-  /* ПАТЧ 2.1 */
   bindColumnResizer
 };
 

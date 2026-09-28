@@ -1,5 +1,7 @@
 /* ============================================================
    utils.js — константы, хелперы, sanitizer, нормализация
+   Зависит от: —
+   Используют: db, state, render, menus, sidebar, backlinks
    ============================================================ */
 
 window.App = window.App || {};
@@ -38,7 +40,9 @@ const VALID_ALIGN  = new Set(["left","center","right"]);
 const VALID_MARKER = new Set(["disc","circle","square","diamond","dot","arrow"]);
 /* ПАТЧ 2.1 */
 const VALID_VALIGN = new Set(["top","center","bottom"]);
-/* ПАТЧ 2.3.0: убрано VALID_LINE_NUMBER_FORMATS */
+
+/* ПАТЧ 2.3.1: типы блоков, которые поддерживают строки */
+const LINE_TYPES = new Set(["text", "h1", "h2", "h3", "quote", "code", "todo"]);
 
 const EMOJI_PRESETS = ["📝","📔","📚","💡","⭐","✅","🎯","🍳","✈️","💼","🎨","🔬","🏠","❤️","⚡"];
 const COLOR_PRESETS = ["#829b91","#a78663","#c46a63","#c98a3c","#8a7bc4","#6a8dc4","#5fa57a","#7a7a7a"];
@@ -96,9 +100,124 @@ function sanitizeAnchor(str){
     .slice(0, 64);
 }
 
+/* ============================================================
+   ПАТЧ 2.3.1: строки
+   ============================================================ */
+
+/* Фабрика строки: { id, text, customId, fragments }
+   - id        — авто-ID (base36, 6 символов)
+   - text      — HTML-содержимое строки (без <br>)
+   - customId  — пользовательский анкор ("" = не задан)
+   - fragments — массив { id, from, to, customId } — фрагменты внутри строки (этап 2.3.4) */
+function line(text = ""){
+  return {
+    id: shortId(),
+    text: typeof text === "string" ? text : "",
+    customId: "",
+    fragments: []
+  };
+}
+
+/* Нормализация строки */
+function normalizeLine(raw){
+  if (!raw || typeof raw !== "object"){
+    return line(typeof raw === "string" ? raw : "");
+  }
+
+  const l = {
+    id: (typeof raw.id === "string" && raw.id) ? raw.id : shortId(),
+    text: typeof raw.text === "string" ? raw.text : "",
+    customId: sanitizeAnchor(raw.customId),
+    fragments: []
+  };
+
+  /* fragments — пока оставляем пустым, реализуем в 2.3.4 */
+  if (Array.isArray(raw.fragments)){
+    l.fragments = raw.fragments
+      .filter(f => f && typeof f === "object")
+      .map(f => ({
+        id: (typeof f.id === "string" && f.id) ? f.id : shortId(),
+        from: Number.isFinite(f.from) ? f.from : 0,
+        to: Number.isFinite(f.to) ? f.to : 0,
+        customId: sanitizeAnchor(f.customId)
+      }));
+  }
+
+  return l;
+}
+
+/* Синхронизация block.content ↔ block.lines.
+   - Разбивает content по <br> (жёсткий перенос = строка)
+   - Сопоставляет с существующими lines по индексу (сохраняет ID)
+   - Создаёт новые строки для новых сегментов, удаляет лишние
+   - Обновляет block.content (собирает обратно через <br>) */
+function syncBlockLines(b){
+  if (!b || !LINE_TYPES.has(b.type)) return;
+
+  /* Если type не поддерживает строки — обнуляем */
+  if (!Array.isArray(b.lines)) b.lines = [];
+
+  /* Разбить content по <br> (и <br/>, <br />) */
+  const raw = typeof b.content === "string" ? b.content : "";
+  const parts = raw.split(/<br\s*\/?>/i);
+
+  /* Собрать новые lines: сопоставляем по индексу со старыми */
+  const nextLines = parts.map((html, i) => {
+    const existing = b.lines[i];
+    if (existing && typeof existing === "object"){
+      return { ...existing, text: html };
+    }
+    return line(html);
+  });
+
+  b.lines = nextLines;
+
+  /* Обратно собрать content — на случай, если что-то поменялось */
+  b.content = b.lines.map(l => l.text).join("<br>");
+}
+
+/* Собрать текстовое содержимое блока (учитывая lines) */
+function getBlockText(b){
+  if (!b) return "";
+  if (LINE_TYPES.has(b.type) && Array.isArray(b.lines) && b.lines.length){
+    return b.lines.map(l => htmlToText(l.text || "")).join("\n");
+  }
+  return htmlToText(b.content || "");
+}
+
+/* Собрать HTML содержимое блока (учитывая lines) */
+function getBlockHTML(b){
+  if (!b) return "";
+  if (LINE_TYPES.has(b.type) && Array.isArray(b.lines) && b.lines.length){
+    return b.lines.map(l => l.text || "").join("<br>");
+  }
+  return b.content || "";
+}
+
+/* Найти строку по id или customId в массиве lines */
+function findLine(b, lineAnchor){
+  if (!b || !Array.isArray(b.lines) || !lineAnchor) return null;
+  return b.lines.find(l =>
+    l.id === lineAnchor || (l.customId && l.customId === lineAnchor)
+  ) || null;
+}
+
+/* Индекс строки */
+function findLineIndex(b, lineAnchor){
+  if (!b || !Array.isArray(b.lines) || !lineAnchor) return -1;
+  return b.lines.findIndex(l =>
+    l.id === lineAnchor || (l.customId && l.customId === lineAnchor)
+  );
+}
+
+/* ============================================================
+   Блоки
+   ============================================================ */
+
 /* ПАТЧ 2.1: block() использует shortId(), добавлены поля колонок.
    ПАТЧ 2.2: добавлен customId.
-   ПАТЧ 2.3.0: убраны lineNumber, blockMarker, blockMarkerColor. */
+   ПАТЧ 2.3.0: убраны lineNumber, blockMarker, blockMarkerColor.
+   ПАТЧ 2.3.1: добавлено поле lines для LINE_TYPES. */
 function block(type = "text", content = ""){
   const b = {
     id: shortId(),
@@ -113,13 +232,15 @@ function block(type = "text", content = ""){
     align: "left",
     offsetX: 0,
     marker: "disc",
-    /* ПАТЧ 2.1 — поля для columns */
+    /* ПАТЧ 2.1 — columns */
     widths:  null,
     gap:     null,
     valign:  "top",
     padding: 0,
     /* ПАТЧ 2.2 — ID блока */
-    customId: ""
+    customId: "",
+    /* ПАТЧ 2.3.1 — строки */
+    lines: []
   };
   if (b.type === "table")   b.rows = [["",""],["",""]];
   if (b.type === "columns"){
@@ -128,6 +249,12 @@ function block(type = "text", content = ""){
     b.widths = [1, 1];
     b.gap = 14;
   }
+
+  /* ПАТЧ 2.3.1: для LINE_TYPES — инициализируем lines из content */
+  if (LINE_TYPES.has(b.type)){
+    syncBlockLines(b);
+  }
+
   return b;
 }
 
@@ -151,7 +278,9 @@ const ALLOWED_TAGS = new Set([
 ]);
 
 const ALLOWED_ATTRS = {
-  a: ["href","class","data-wikilink","data-wikilink-anchor","data-wikilink-id","title"],
+  a: ["href","class","data-wikilink","data-wikilink-id",
+      "data-wikilink-block-anchor","data-wikilink-line-anchor",
+      "data-wikilink-fragment-anchor","title"],
   span: ["class","data-checked"],
   p: [],
   td: ["colspan","rowspan"],
@@ -234,8 +363,10 @@ function normalizeBlock(raw){
     gap:     null,
     valign:  VALID_VALIGN.has(raw.valign) ? raw.valign : "top",
     padding: Number.isFinite(raw.padding) ? Math.max(0, Math.min(64, raw.padding)) : 0,
-    /* ПАТЧ 2.2: ID блока */
-    customId: sanitizeAnchor(raw.customId)
+    /* ПАТЧ 2.2 */
+    customId: sanitizeAnchor(raw.customId),
+    /* ПАТЧ 2.3.1 */
+    lines: []
   };
 
   if (b.type === "table"){
@@ -261,6 +392,21 @@ function normalizeBlock(raw){
   }
   else {
     b.content = typeof raw.content === "string" ? raw.content : "";
+  }
+
+  /* ПАТЧ 2.3.1: lines */
+  if (LINE_TYPES.has(b.type)){
+    /* Если в raw есть нормальный массив lines — берём его */
+    if (Array.isArray(raw.lines) && raw.lines.length){
+      b.lines = raw.lines.map(normalizeLine);
+    } else {
+      b.lines = [];
+    }
+    /* Синхронизируем с content — так гарантируем, что каждая <br>-секция
+       имеет свою строку */
+    syncBlockLines(b);
+  } else {
+    b.lines = [];
   }
 
   return b;
@@ -289,7 +435,6 @@ function normalizeDocument(raw){
     createdAt: Number.isFinite(raw.createdAt) ? raw.createdAt : t,
     updatedAt: Number.isFinite(raw.updatedAt) ? raw.updatedAt : t,
     customFields: (raw.customFields && typeof raw.customFields === "object") ? raw.customFields : {},
-    /* ПАТЧ 2.3.0: убраны showLineNumbers, lineNumberFormat */
     blockCount: 0,
     charCount: 0,
     wordCount: 0
@@ -328,9 +473,24 @@ function normalizeTemplate(raw){
 }
 
 /* ============================================================
-   Wikilinks: [[Имя документа]] и [[Имя документа#anchor]]
+   Wikilinks: [[doc]], [[doc#block]], [[doc#block#line]],
+   [[doc#block#line#fragment]]
    ============================================================ */
 
+/* Разбирает строку анкора вида "block#line#fragment" на части.
+   Возвращает { blockAnchor, lineAnchor, fragmentAnchor }. */
+function parseAnchorString(raw){
+  const out = { blockAnchor: "", lineAnchor: "", fragmentAnchor: "" };
+  if (!raw) return out;
+
+  const parts = String(raw).split("#").map(p => p.trim());
+  out.blockAnchor    = parts[0] || "";
+  out.lineAnchor     = parts[1] || "";
+  out.fragmentAnchor = parts[2] || "";
+  return out;
+}
+
+/* extractWikilinks → возвращает [{ name, blockAnchor, lineAnchor, fragmentAnchor }] */
 function extractWikilinks(html){
   if (!html) return [];
   const tmp = document.createElement("div");
@@ -347,25 +507,30 @@ function extractWikilinks(html){
     const raw = m[1].trim();
     if (!raw) continue;
 
+    /* name — до первого #, остальное — анкоры */
     const hashIdx = raw.indexOf("#");
-    let name, anchor;
+    let name, anchorStr;
     if (hashIdx >= 0){
-      name   = raw.slice(0, hashIdx).trim();
-      anchor = raw.slice(hashIdx + 1).trim();
+      name = raw.slice(0, hashIdx).trim();
+      anchorStr = raw.slice(hashIdx + 1).trim();
     } else {
-      name   = raw;
-      anchor = "";
+      name = raw;
+      anchorStr = "";
     }
     if (!name) continue;
 
-    const key = name + "\u0000" + anchor;
+    const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorString(anchorStr);
+
+    const key = name + "\u0000" + blockAnchor + "\u0000" + lineAnchor + "\u0000" + fragmentAnchor;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ name, anchor });
+
+    out.push({ name, blockAnchor, lineAnchor, fragmentAnchor });
   }
   return out;
 }
 
+/* renderWikilinks — три data-атрибута для анкоров */
 function renderWikilinks(html, resolver){
   if (!html) return "";
 
@@ -396,15 +561,17 @@ function renderWikilinks(html, resolver){
       if (!raw) return full;
 
       const hashIdx = raw.indexOf("#");
-      let name, anchor;
+      let name, anchorStr;
       if (hashIdx >= 0){
-        name   = raw.slice(0, hashIdx).trim();
-        anchor = raw.slice(hashIdx + 1).trim();
+        name = raw.slice(0, hashIdx).trim();
+        anchorStr = raw.slice(hashIdx + 1).trim();
       } else {
-        name   = raw;
-        anchor = "";
+        name = raw;
+        anchorStr = "";
       }
       if (!name) return full;
+
+      const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorString(anchorStr);
 
       let info = null;
       try { info = resolver(name); } catch(e){ info = null; }
@@ -412,20 +579,24 @@ function renderWikilinks(html, resolver){
       const missing = !info?.id;
       const cls = "wikilink" + (missing ? " missing" : "");
 
+      /* Тултип */
       let title;
       if (missing){
         title = `Создать «${escape(name)}»`;
-      } else if (anchor){
-        title = `Открыть «${escape(name)}» → #${escape(anchor)}`;
+      } else if (blockAnchor || lineAnchor || fragmentAnchor){
+        const parts = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean);
+        title = `Открыть «${escape(name)}» → #${escape(parts.join("#"))}`;
       } else {
         title = `Открыть «${escape(name)}»`;
       }
 
-      const anchorHTML = anchor
-        ? `<span class="wl-anchor">#${escape(anchor)}</span>`
+      /* Визуальный анкор — показываем всю цепочку после # */
+      const visibleAnchor = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean).join("#");
+      const anchorHTML = visibleAnchor
+        ? `<span class="wl-anchor">#${escape(visibleAnchor)}</span>`
         : "";
 
-      return `<a class="${cls}" data-wikilink="${escape(name)}" data-wikilink-id="${escape(id)}" data-wikilink-anchor="${escape(anchor)}" title="${title}">${escape(name)}${anchorHTML}</a>`;
+      return `<a class="${cls}" data-wikilink="${escape(name)}" data-wikilink-id="${escape(id)}" data-wikilink-block-anchor="${escape(blockAnchor)}" data-wikilink-line-anchor="${escape(lineAnchor)}" data-wikilink-fragment-anchor="${escape(fragmentAnchor)}" title="${title}">${escape(name)}${anchorHTML}</a>`;
     });
   };
 
@@ -471,18 +642,18 @@ function blockToHTML(b){
     return `<${b.type}>${b.content || ""}</${b.type}>`;
   }
   if (b.type === "todo"){
-    return `<div>${b.checked ? "☑" : "☐"} ${b.content || ""}</div>`;
+    return `<div>${b.checked ? "☑" : "☐"} ${getBlockHTML(b)}</div>`;
   }
   if (b.type === "code"){
-    return `<pre class="code">${escape(htmlToText(b.content || ""))}</pre>`;
+    return `<pre class="code">${escape(getBlockText(b))}</pre>`;
   }
   if (b.type === "quote"){
-    return `<blockquote class="quote">${b.content || ""}</blockquote>`;
+    return `<blockquote class="quote">${getBlockHTML(b)}</blockquote>`;
   }
   if (b.type === "h1" || b.type === "h2" || b.type === "h3"){
-    return `<${b.type}>${b.content || ""}</${b.type}>`;
+    return `<${b.type}>${getBlockHTML(b)}</${b.type}>`;
   }
-  return `<div>${b.content || ""}</div>`;
+  return `<div>${getBlockHTML(b)}</div>`;
 }
 
 function recomputeDocStats(doc){
@@ -491,9 +662,11 @@ function recomputeDocStats(doc){
 
   let chars = 0, words = 0;
   for (const b of blocks){
-    const text = htmlToText(b.content || "");
+    /* ПАТЧ 2.3.1: считаем через getBlockText, он учитывает lines */
+    const text = getBlockText(b);
     chars += text.length;
     words += (text.match(/\S+/g) || []).length;
+
     if (b.type === "table" && Array.isArray(b.rows)){
       for (const row of b.rows){
         for (const cell of row){
@@ -652,9 +825,12 @@ function htmlToMD(html){
           case "a": {
             const href = child.getAttribute("href") || "";
             const wikilink = child.getAttribute("data-wikilink");
-            const anchor = child.getAttribute("data-wikilink-anchor") || "";
+            const bAnchor = child.getAttribute("data-wikilink-block-anchor") || "";
+            const lAnchor = child.getAttribute("data-wikilink-line-anchor") || "";
+            const fAnchor = child.getAttribute("data-wikilink-fragment-anchor") || "";
             if (wikilink){
-              out += anchor ? `[[${wikilink}#${anchor}]]` : `[[${wikilink}]]`;
+              const anchors = [bAnchor, lAnchor, fAnchor].filter(Boolean).join("#");
+              out += anchors ? `[[${wikilink}#${anchors}]]` : `[[${wikilink}]]`;
             } else {
               out += href ? `[${inner}](${href})` : inner;
             }
@@ -760,10 +936,15 @@ return {
   types, VALID_TYPES, VALID_BG, VALID_FONT, VALID_INDENT, VALID_ALIGN, VALID_MARKER,
   /* ПАТЧ 2.1 */
   VALID_VALIGN,
+  /* ПАТЧ 2.3.1 */
+  LINE_TYPES,
   EMOJI_PRESETS, COLOR_PRESETS,
   $, $$, uid, shortId, now, escape, el, isArrayOfArrays, block, toast,
   sanitize,
   sanitizeAnchor,
+  /* ПАТЧ 2.3.1 */
+  line, normalizeLine, syncBlockLines, getBlockText, getBlockHTML,
+  findLine, findLineIndex, parseAnchorString,
   normalizeBlock, normalizeDocument, normalizeTemplate, normalizeFolder, normalizeTag,
   normalizeUI, normalizeSettings, normalizeState,
   recomputeDocStats,

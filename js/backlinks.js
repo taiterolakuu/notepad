@@ -10,7 +10,7 @@ window.App.backlinks = (() => {
 "use strict";
 
 const U = window.App.utils;
-const { $, $$, el, escape, toast } = U;
+const { $, $$, el, escape, toast, LINE_TYPES } = U;
 
 const St = () => window.App.state.S;
 const getActiveDoc = () => window.App.state.getActiveDoc();
@@ -24,6 +24,16 @@ function isExpanded(){
 function toggleExpanded(){
   window.App.state.setUI("backlinksExpanded", !isExpanded());
   render();
+}
+
+/* ---------- Хелпер: разобрать анкор-строку в 3 части ---------- */
+function parseAnchorTriple(anchorStr){
+  const parts = String(anchorStr || "").split("#").map(p => p.trim());
+  return {
+    blockAnchor:    parts[0] || "",
+    lineAnchor:     parts[1] || "",
+    fragmentAnchor: parts[2] || ""
+  };
 }
 
 /* ---------- Рендер ---------- */
@@ -42,7 +52,6 @@ function render(){
   const backlinks = window.App.state.getBacklinks(doc.id);
   const mentions  = window.App.state.findUnlinkedMentions(doc.id);
 
-  /* Нет ничего — панель скрыта совсем */
   if (!backlinks.length && !mentions.length){
     host.innerHTML = "";
     host.style.display = "none";
@@ -75,10 +84,8 @@ function render(){
   bar.onclick = toggleExpanded;
   host.append(bar);
 
-  /* Свёрнуто — на этом всё */
   if (!isExpanded()) return;
 
-  /* Развёрнутая часть */
   const body = el("div", "bl-body");
 
   if (backlinks.length){
@@ -88,7 +95,7 @@ function render(){
       items: backlinks.map(b => ({
         doc: b.doc,
         snippet: b.snippet,
-        /* ПАТЧ 2.2: передаём анкор дальше */
+        /* ПАТЧ 2.3.1: анкор как "block#line#fragment" */
         anchor: b.anchor || "",
         action: "open"
       }))
@@ -123,7 +130,6 @@ function renderGroup({ title, icon, items }){
   items.forEach(it => {
     const row = el("div", "bl-item");
 
-    /* Клик по имени — переход */
     const name = el("button", "bl-item-name");
     name.type = "button";
 
@@ -137,7 +143,7 @@ function renderGroup({ title, icon, items }){
     t.textContent = it.doc.title || "Без названия";
     name.append(t);
 
-    /* ПАТЧ 2.2: показываем анкор рядом с именем, если он есть */
+    /* ПАТЧ 2.3.1: анкор с тройной адресацией — показываем как есть */
     if (it.anchor){
       const a = el("span", "bl-item-anchor");
       a.textContent = "#" + it.anchor;
@@ -145,26 +151,30 @@ function renderGroup({ title, icon, items }){
     }
 
     name.onclick = () => {
-      /* ПАТЧ 2.2: если есть анкор — открываем и скроллим к блоку */
       const docId = it.doc.id;
-      const anchor = it.anchor || "";
+      const anchorStr = it.anchor || "";
 
+      /* ПАТЧ 2.3.1: разбираем анкор и передаём в scrollToAnchorPath */
       Promise.resolve(window.App.state.setActiveDoc(docId)).then(() => {
-        if (anchor){
-          window.App.state.scrollToAnchor(docId, anchor);
+        if (anchorStr){
+          const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorTriple(anchorStr);
+          if (window.App.state.scrollToAnchorPath){
+            window.App.state.scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor);
+          } else if (window.App.state.scrollToAnchor){
+            /* fallback */
+            window.App.state.scrollToAnchor(docId, anchorStr);
+          }
         }
       });
     };
     row.append(name);
 
-    /* Снипет */
     if (it.snippet){
       const sn = el("span", "bl-item-snip");
       sn.textContent = it.snippet;
       row.append(sn);
     }
 
-    /* Кнопка «превратить в [[ ]]» для unlinked mentions */
     if (it.action === "link"){
       const btn = el("button", "bl-item-action");
       btn.type = "button";
@@ -184,10 +194,10 @@ function renderGroup({ title, icon, items }){
   return wrap;
 }
 
-/* ---------- Превращение упоминания в [[ ]] ---------- */
+/* ============================================================
+   ПАТЧ 2.3.1: linkifyMention — с поддержкой строк
+   ============================================================ */
 
-/* Ищет в документе sourceId первое упоминание targetName (без [[ ]])
-   и заменяет его на [[targetName]]. */
 function linkifyMention(sourceId, targetName){
   const src = St().documents[sourceId];
   if (!src) return;
@@ -201,32 +211,45 @@ function linkifyMention(sourceId, targetName){
 
   let changed = false;
 
+  const alreadyLinkedIn = (html) => {
+    const links = U.extractWikilinks(html);
+    return links.some(l =>
+      (l.name || "").trim().toLowerCase() === needle.toLowerCase()
+    );
+  };
+
   for (const b of src.blocks || []){
     if (b.type === "code") continue;
 
-    if (typeof b.content === "string" && re.test(b.content)){
-      /* ПАТЧ 2.2: extractWikilinks возвращает [{name, anchor}] */
-      const links = U.extractWikilinks(b.content);
-      const alreadyLinked = links.some(l =>
-        (l.name || "").trim().toLowerCase() === needle.toLowerCase()
-      );
-      if (alreadyLinked) continue;
+    /* --- ПАТЧ 2.3.1: строки --- */
+    if (Array.isArray(b.lines) && b.lines.length){
+      for (const ln of b.lines){
+        if (typeof ln.text === "string" && re.test(ln.text)){
+          if (alreadyLinkedIn(ln.text)) continue;
+          ln.text = ln.text.replace(re, `[[${needle}]]`);
+          /* Обновляем и content для обратной совместимости */
+          b.content = b.lines.map(l => l.text).join("<br>");
+          changed = true;
+          break;
+        }
+      }
+      if (changed) break;
+    }
 
+    /* --- content --- */
+    if (typeof b.content === "string" && re.test(b.content)){
+      if (alreadyLinkedIn(b.content)) continue;
       b.content = b.content.replace(re, `[[${needle}]]`);
       changed = true;
       break;
     }
 
+    /* --- table --- */
     if (b.type === "table" && Array.isArray(b.rows)){
       for (const row of b.rows){
         for (let i = 0; i < row.length; i++){
           if (typeof row[i] === "string" && re.test(row[i])){
-            const links = U.extractWikilinks(row[i]);
-            const alreadyLinked = links.some(l =>
-              (l.name || "").trim().toLowerCase() === needle.toLowerCase()
-            );
-            if (alreadyLinked) continue;
-
+            if (alreadyLinkedIn(row[i])) continue;
             row[i] = row[i].replace(re, `[[${needle}]]`);
             changed = true;
             break;
@@ -237,15 +260,11 @@ function linkifyMention(sourceId, targetName){
     }
     if (changed) break;
 
+    /* --- columns --- */
     if (b.type === "columns" && Array.isArray(b.content)){
       for (let i = 0; i < b.content.length; i++){
         if (typeof b.content[i] === "string" && re.test(b.content[i])){
-          const links = U.extractWikilinks(b.content[i]);
-          const alreadyLinked = links.some(l =>
-            (l.name || "").trim().toLowerCase() === needle.toLowerCase()
-          );
-          if (alreadyLinked) continue;
-
+          if (alreadyLinkedIn(b.content[i])) continue;
           b.content[i] = b.content[i].replace(re, `[[${needle}]]`);
           changed = true;
           break;
