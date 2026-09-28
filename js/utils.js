@@ -2,6 +2,12 @@
    utils.js — константы, хелперы, sanitizer, нормализация
    Зависит от: —
    Используют: db, state, render, menus, sidebar, backlinks
+
+   [Пакет 5]  XSS: DOMParser/<template>, safe renderWikilinks, escape('`)
+   [Пакет 6]  sanitizeAnchor — кириллица
+   [Пакет 8]  htmlToText — code через textContent
+   [Пакет 12] convertBlockType, validateDocId
+   [Пакет 15] shortId — коллизии; escape расширен
    ============================================================ */
 
 window.App = window.App || {};
@@ -38,10 +44,8 @@ const VALID_FONT   = new Set(["","sans","serif","mono"]);
 const VALID_INDENT = new Set([0,1,2,3]);
 const VALID_ALIGN  = new Set(["left","center","right"]);
 const VALID_MARKER = new Set(["disc","circle","square","diamond","dot","arrow"]);
-/* ПАТЧ 2.1 */
 const VALID_VALIGN = new Set(["top","center","bottom"]);
 
-/* ПАТЧ 2.3.1: типы блоков, которые поддерживают строки */
 const LINE_TYPES = new Set(["text", "h1", "h2", "h3", "quote", "code", "todo"]);
 
 const EMOJI_PRESETS = ["📝","📔","📚","💡","⭐","✅","🎯","🍳","✈️","💼","🎨","🔬","🏠","❤️","⚡"];
@@ -50,14 +54,36 @@ const COLOR_PRESETS = ["#829b91","#a78663","#c46a63","#c98a3c","#8a7bc4","#6a8dc
 const $  = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 
-/* ---------- Время / id ---------- */
+/* ============================================================
+   [Пакет 5] Безопасный парсер HTML
+   ============================================================ */
 
+/* Парсит HTML через <template> — не выполняет inline-обработчики,
+   не грузит картинки, не запускает <script>. Возвращает DocumentFragment. */
+function parseHTMLFragment(html){
+  const tpl = document.createElement("template");
+  tpl.innerHTML = html == null ? "" : String(html);
+  return tpl.content;
+}
+
+/* Возвращает <div> с детьми из HTML (для сериализации обратно). */
+function parseHTMLToDiv(html){
+  const div = document.createElement("div");
+  div.append(parseHTMLFragment(html));
+  return div;
+}
+
+/* ============================================================
+   Время / id
+   ============================================================ */
+
+/* [Пакет 15] защита от коллизий при большом числе блоков */
 function shortId(){
   const chars = "0123456789abcdefghijklmnopqrstuvwxyz";
-  let s = "";
-  const arr = new Uint8Array(6);
+  const arr = new Uint8Array(8);
   crypto.getRandomValues(arr);
-  for (let i = 0; i < 6; i++) s += chars[arr[i] % 36];
+  let s = "";
+  for (let i = 0; i < 8; i++) s += chars[arr[i] % 36];
   return s;
 }
 
@@ -71,11 +97,37 @@ function now(){
   return Date.now();
 }
 
-/* ---------- Хелперы ---------- */
+/* ============================================================
+   [Пакет 12] validateDocId — валидация id
+   ============================================================ */
+
+/* Разрешены только безопасные символы; запрещены "магические"
+   свойства прототипа Object.prototype. */
+function isValidId(id){
+  return typeof id === "string"
+    && id.length >= 1
+    && id.length <= 128
+    && /^[a-zA-Z0-9\-_]+$/.test(id)
+    && id !== "__proto__"
+    && id !== "constructor"
+    && id !== "prototype";
+}
+
+/* Алиас для совместимости */
+const validateDocId = isValidId;
+
+/* ============================================================
+   [Пакет 5, 15] escape — расширен на ' и `
+   ============================================================ */
 
 function escape(s){
-  return String(s).replace(/[&<>"]/g, c => ({
-    "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"
+  return String(s).replace(/[&<>"'`]/g, c => ({
+    "&":"&amp;",
+    "<":"&lt;",
+    ">":"&gt;",
+    '"':"&quot;",
+    "'":"&#39;",
+    "`":"&#96;"
   }[c]));
 }
 
@@ -89,26 +141,24 @@ function isArrayOfArrays(x){
   return Array.isArray(x) && x.every(r => Array.isArray(r));
 }
 
-/* ---------- Валидация анкора ---------- */
+/* ============================================================
+   [Пакет 6] sanitizeAnchor — кириллица + единый регистр
+   ============================================================ */
 
 function sanitizeAnchor(str){
   if (typeof str !== "string") return "";
   return str
     .trim()
     .toLowerCase()
-    .replace(/[^a-z0-9\-_]/g, "")
+    /* \p{L} — буквы (включая кириллицу), \p{N} — цифры, _ и - */
+    .replace(/[^\p{L}\p{N}_\-]/gu, "")
     .slice(0, 64);
 }
 
 /* ============================================================
-   ПАТЧ 2.3.1: строки
+   Строки (LINE_TYPES)
    ============================================================ */
 
-/* Фабрика строки: { id, text, customId, fragments }
-   - id        — авто-ID (base36, 6 символов)
-   - text      — HTML-содержимое строки (без <br>)
-   - customId  — пользовательский анкор ("" = не задан)
-   - fragments — массив { id, from, to, customId } — фрагменты внутри строки (этап 2.3.4) */
 function line(text = ""){
   return {
     id: shortId(),
@@ -118,7 +168,6 @@ function line(text = ""){
   };
 }
 
-/* Нормализация строки */
 function normalizeLine(raw){
   if (!raw || typeof raw !== "object"){
     return line(typeof raw === "string" ? raw : "");
@@ -131,7 +180,6 @@ function normalizeLine(raw){
     fragments: []
   };
 
-  /* fragments — пока оставляем пустым, реализуем в 2.3.4 */
   if (Array.isArray(raw.fragments)){
     l.fragments = raw.fragments
       .filter(f => f && typeof f === "object")
@@ -146,22 +194,14 @@ function normalizeLine(raw){
   return l;
 }
 
-/* Синхронизация block.content ↔ block.lines.
-   - Разбивает content по <br> (жёсткий перенос = строка)
-   - Сопоставляет с существующими lines по индексу (сохраняет ID)
-   - Создаёт новые строки для новых сегментов, удаляет лишние
-   - Обновляет block.content (собирает обратно через <br>) */
 function syncBlockLines(b){
   if (!b || !LINE_TYPES.has(b.type)) return;
 
-  /* Если type не поддерживает строки — обнуляем */
   if (!Array.isArray(b.lines)) b.lines = [];
 
-  /* Разбить content по <br> (и <br/>, <br />) */
   const raw = typeof b.content === "string" ? b.content : "";
   const parts = raw.split(/<br\s*\/?>/i);
 
-  /* Собрать новые lines: сопоставляем по индексу со старыми */
   const nextLines = parts.map((html, i) => {
     const existing = b.lines[i];
     if (existing && typeof existing === "object"){
@@ -171,12 +211,9 @@ function syncBlockLines(b){
   });
 
   b.lines = nextLines;
-
-  /* Обратно собрать content — на случай, если что-то поменялось */
   b.content = b.lines.map(l => l.text).join("<br>");
 }
 
-/* Собрать текстовое содержимое блока (учитывая lines) */
 function getBlockText(b){
   if (!b) return "";
   if (LINE_TYPES.has(b.type) && Array.isArray(b.lines) && b.lines.length){
@@ -185,7 +222,6 @@ function getBlockText(b){
   return htmlToText(b.content || "");
 }
 
-/* Собрать HTML содержимое блока (учитывая lines) */
 function getBlockHTML(b){
   if (!b) return "";
   if (LINE_TYPES.has(b.type) && Array.isArray(b.lines) && b.lines.length){
@@ -194,7 +230,18 @@ function getBlockHTML(b){
   return b.content || "";
 }
 
-/* Найти строку по id или customId в массиве lines */
+/* [Пакет 13] setBlockHTML — записать HTML, сохранив структуру lines */
+function setBlockHTML(b, html){
+  if (!b) return;
+  if (LINE_TYPES.has(b.type)){
+    b.content = typeof html === "string" ? html : "";
+    b.lines = [];
+    syncBlockLines(b);
+  } else {
+    b.content = typeof html === "string" ? html : "";
+  }
+}
+
 function findLine(b, lineAnchor){
   if (!b || !Array.isArray(b.lines) || !lineAnchor) return null;
   return b.lines.find(l =>
@@ -202,7 +249,6 @@ function findLine(b, lineAnchor){
   ) || null;
 }
 
-/* Индекс строки */
 function findLineIndex(b, lineAnchor){
   if (!b || !Array.isArray(b.lines) || !lineAnchor) return -1;
   return b.lines.findIndex(l =>
@@ -211,13 +257,120 @@ function findLineIndex(b, lineAnchor){
 }
 
 /* ============================================================
+   [Пакет 12] convertBlockType — конвертер типов блоков
+   Переносит содержимое при смене b.type:
+     - в LINE_TYPES:  b.lines[0].text ← текущий HTML
+     - в ul/ol:       HTML разбивается на <li> по <br> или <li>
+     - в table:       HTML остаётся текстом первой ячейки
+     - из ul/ol в text:  <li> разворачиваются в <br>-joined строки
+   ============================================================ */
+
+function _blockSourceHTML(b){
+  if (!b) return "";
+  const t = b.type;
+
+  if (LINE_TYPES.has(t)){
+    if (Array.isArray(b.lines) && b.lines.length){
+      return b.lines.map(l => l.text || "").join("<br>");
+    }
+    return typeof b.content === "string" ? b.content : "";
+  }
+
+  if (t === "ul" || t === "ol"){
+    return typeof b.content === "string" ? b.content : "";
+  }
+
+  if (t === "table"){
+    if (Array.isArray(b.rows)){
+      return b.rows.map(row => row.map(c => c || "").join(" ")).join("<br>");
+    }
+    return "";
+  }
+
+  if (t === "columns"){
+    if (Array.isArray(b.content)){
+      return b.content.filter(Boolean).join("<br>");
+    }
+    return "";
+  }
+
+  return typeof b.content === "string" ? b.content : "";
+}
+
+function convertBlockType(b, newType){
+  if (!b || !newType) return b;
+  if (!VALID_TYPES.has(newType)) return b;
+
+  const oldType = b.type;
+  if (oldType === newType) return b;
+
+  /* Собираем HTML-содержимое из исходного типа */
+  const html = _blockSourceHTML(b);
+
+  /* Сбрасываем поля, которые не применимы к новому типу */
+  b.type = newType;
+  b.checked = false;
+  b.rows = null;
+  b.cols = null;
+  b.widths = null;
+  b.gap = null;
+  b.lines = [];
+
+  if (LINE_TYPES.has(newType)){
+    /* Разбиваем по <br> на строки */
+    b.content = html;
+    syncBlockLines(b);
+    if (!b.lines.length) b.lines = [line("")];
+  }
+  else if (newType === "ul" || newType === "ol"){
+    /* Извлекаем <li>; если их нет — разбиваем по <br> */
+    const tmpl = document.createElement("div");
+    tmpl.innerHTML = html || "";
+    let lis = [...tmpl.querySelectorAll("li")];
+
+    if (!lis.length){
+      const parts = (tmpl.innerHTML || "").split(/<br\s*\/?>/i);
+      lis = parts.map(p => {
+        const d = document.createElement("div");
+        d.innerHTML = p;
+        return d;
+      });
+    }
+
+    b.content = lis
+      .map(li => `<li>${li.innerHTML || "<br>"}</li>`)
+      .join("") || "<li><br></li>";
+    if (newType === "ul" && !b.marker) b.marker = "disc";
+  }
+  else if (newType === "table"){
+    /* Весь HTML в первую ячейку; остальные пустые */
+    const plain = htmlToText(html || "");
+    b.rows = [[plain, ""], ["", ""]];
+    b.content = "";
+  }
+  else if (newType === "columns"){
+    /* Первая колонка — весь HTML, вторая пустая */
+    b.cols = 2;
+    b.content = [html || "", ""];
+    b.widths = [0.5, 0.5];
+    b.gap = 14;
+    b.valign = b.valign || "top";
+  }
+  else if (newType === "code"){
+    b.content = htmlToText(html || "");
+  }
+  else {
+    /* text/h1/h2/h3/quote/divider/image */
+    b.content = typeof html === "string" ? html : "";
+  }
+
+  return b;
+}
+
+/* ============================================================
    Блоки
    ============================================================ */
 
-/* ПАТЧ 2.1: block() использует shortId(), добавлены поля колонок.
-   ПАТЧ 2.2: добавлен customId.
-   ПАТЧ 2.3.0: убраны lineNumber, blockMarker, blockMarkerColor.
-   ПАТЧ 2.3.1: добавлено поле lines для LINE_TYPES. */
 function block(type = "text", content = ""){
   const b = {
     id: shortId(),
@@ -232,14 +385,11 @@ function block(type = "text", content = ""){
     align: "left",
     offsetX: 0,
     marker: "disc",
-    /* ПАТЧ 2.1 — columns */
     widths:  null,
     gap:     null,
     valign:  "top",
     padding: 0,
-    /* ПАТЧ 2.2 — ID блока */
     customId: "",
-    /* ПАТЧ 2.3.1 — строки */
     lines: []
   };
   if (b.type === "table")   b.rows = [["",""],["",""]];
@@ -250,7 +400,6 @@ function block(type = "text", content = ""){
     b.gap = 14;
   }
 
-  /* ПАТЧ 2.3.1: для LINE_TYPES — инициализируем lines из content */
   if (LINE_TYPES.has(b.type)){
     syncBlockLines(b);
   }
@@ -258,15 +407,20 @@ function block(type = "text", content = ""){
   return b;
 }
 
+/* [Пакет 15] toast — сброс предыдущего таймера */
+let _toastTimer = null;
 function toast(s){
   const t = document.getElementById("toast");
   if (!t) return;
   t.textContent = s;
   t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 1400);
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => t.classList.remove("show"), 1400);
 }
 
-/* ---------- Sanitizer ---------- */
+/* ============================================================
+   [Пакет 5] Sanitizer — на <template>, не на div.innerHTML
+   ============================================================ */
 
 const ALLOWED_TAGS = new Set([
   "b","strong","i","em","u","s","strike","del","ins","mark",
@@ -289,11 +443,10 @@ const ALLOWED_ATTRS = {
 };
 
 function sanitize(html){
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
+  const frag = parseHTMLFragment(html);
 
-  tmp.querySelectorAll(
-    "script,style,meta,link,iframe,object,embed,noscript,o\\:p"
+  frag.querySelectorAll(
+    "script,style,meta,link,iframe,object,embed,noscript,form,input,button,textarea,select,base,svg,math"
   ).forEach(n => n.remove());
 
   const walk = node => {
@@ -302,9 +455,9 @@ function sanitize(html){
         const tag = child.tagName.toLowerCase();
 
         if (!ALLOWED_TAGS.has(tag)){
-          const frag = document.createDocumentFragment();
-          while (child.firstChild) frag.append(child.firstChild);
-          child.replaceWith(frag);
+          const f = document.createDocumentFragment();
+          while (child.firstChild) f.append(child.firstChild);
+          child.replaceWith(f);
           walk(node);
           return;
         }
@@ -335,12 +488,16 @@ function sanitize(html){
       }
     });
   };
-  walk(tmp);
+  walk(frag);
 
-  return tmp.innerHTML;
+  const div = document.createElement("div");
+  div.append(frag);
+  return div.innerHTML;
 }
 
-/* ---------- Нормализация блоков ---------- */
+/* ============================================================
+   Нормализация блоков / документов
+   ============================================================ */
 
 function normalizeBlock(raw){
   if (!raw || typeof raw !== "object") return null;
@@ -358,14 +515,11 @@ function normalizeBlock(raw){
     align: VALID_ALIGN.has(raw.align) ? raw.align : "left",
     offsetX: Number.isFinite(raw.offsetX) ? raw.offsetX : 0,
     marker: VALID_MARKER.has(raw.marker) ? raw.marker : "disc",
-    /* ПАТЧ 2.1 */
     widths:  null,
     gap:     null,
     valign:  VALID_VALIGN.has(raw.valign) ? raw.valign : "top",
     padding: Number.isFinite(raw.padding) ? Math.max(0, Math.min(64, raw.padding)) : 0,
-    /* ПАТЧ 2.2 */
     customId: sanitizeAnchor(raw.customId),
-    /* ПАТЧ 2.3.1 */
     lines: []
   };
 
@@ -394,25 +548,23 @@ function normalizeBlock(raw){
     b.content = typeof raw.content === "string" ? raw.content : "";
   }
 
-  /* ПАТЧ 2.3.1: lines */
   if (LINE_TYPES.has(b.type)){
-    /* Если в raw есть нормальный массив lines — берём его */
     if (Array.isArray(raw.lines) && raw.lines.length){
       b.lines = raw.lines.map(normalizeLine);
     } else {
       b.lines = [];
     }
-    /* Синхронизируем с content — так гарантируем, что каждая <br>-секция
-       имеет свою строку */
     syncBlockLines(b);
+  } else if (b.type === "table"){
+    b.rows = b.rows.map(r => r.map(v => sanitize(v || "")));
+  } else if (b.type === "columns"){
+    b.content = b.content.map(v => sanitize(v || ""));
   } else {
-    b.lines = [];
+    b.content = sanitize(b.content);
   }
 
   return b;
 }
-
-/* ---------- Нормализация документа ---------- */
 
 function normalizeDocument(raw){
   if (!raw || typeof raw !== "object") return null;
@@ -448,8 +600,6 @@ function normalizeDocument(raw){
   return doc;
 }
 
-/* ---------- Нормализация шаблона ---------- */
-
 function normalizeTemplate(raw){
   if (!raw || typeof raw !== "object") return null;
 
@@ -473,12 +623,9 @@ function normalizeTemplate(raw){
 }
 
 /* ============================================================
-   Wikilinks: [[doc]], [[doc#block]], [[doc#block#line]],
-   [[doc#block#line#fragment]]
+   Wikilinks
    ============================================================ */
 
-/* Разбирает строку анкора вида "block#line#fragment" на части.
-   Возвращает { blockAnchor, lineAnchor, fragmentAnchor }. */
 function parseAnchorString(raw){
   const out = { blockAnchor: "", lineAnchor: "", fragmentAnchor: "" };
   if (!raw) return out;
@@ -490,15 +637,13 @@ function parseAnchorString(raw){
   return out;
 }
 
-/* extractWikilinks → возвращает [{ name, blockAnchor, lineAnchor, fragmentAnchor }] */
 function extractWikilinks(html){
   if (!html) return [];
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
+  const frag = parseHTMLFragment(html);
 
-  tmp.querySelectorAll("code, pre").forEach(n => n.remove());
+  frag.querySelectorAll("code, pre").forEach(n => n.remove());
 
-  const text = tmp.textContent || "";
+  const text = frag.textContent || "";
   const out = [];
   const seen = new Set();
   const re = /\[\[([^\]]+)\]\]/g;
@@ -507,7 +652,6 @@ function extractWikilinks(html){
     const raw = m[1].trim();
     if (!raw) continue;
 
-    /* name — до первого #, остальное — анкоры */
     const hashIdx = raw.indexOf("#");
     let name, anchorStr;
     if (hashIdx >= 0){
@@ -530,23 +674,94 @@ function extractWikilinks(html){
   return out;
 }
 
-/* renderWikilinks — три data-атрибута для анкоров */
 function renderWikilinks(html, resolver){
   if (!html) return "";
 
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
+  const frag = parseHTMLFragment(html);
+
+  const buildLink = (rawName) => {
+    const raw = String(rawName).trim();
+    if (!raw) return null;
+
+    const hashIdx = raw.indexOf("#");
+    let name, anchorStr;
+    if (hashIdx >= 0){
+      name = raw.slice(0, hashIdx).trim();
+      anchorStr = raw.slice(hashIdx + 1).trim();
+    } else {
+      name = raw;
+      anchorStr = "";
+    }
+    if (!name) return null;
+
+    const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorString(anchorStr);
+
+    let info = null;
+    try { info = resolver(name); } catch(e){ info = null; }
+    const id = info?.id || "";
+    const missing = !info?.id;
+    const cls = "wikilink" + (missing ? " missing" : "");
+
+    let title;
+    if (missing){
+      title = `Создать «${name}»`;
+    } else if (blockAnchor || lineAnchor || fragmentAnchor){
+      const parts = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean);
+      title = `Открыть «${name}» → #${parts.join("#")}`;
+    } else {
+      title = `Открыть «${name}»`;
+    }
+
+    const a = document.createElement("a");
+    a.className = cls;
+    a.setAttribute("data-wikilink", name);
+    a.setAttribute("data-wikilink-id", id);
+    a.setAttribute("data-wikilink-block-anchor", blockAnchor);
+    a.setAttribute("data-wikilink-line-anchor", lineAnchor);
+    a.setAttribute("data-wikilink-fragment-anchor", fragmentAnchor);
+    a.setAttribute("title", title);
+    a.appendChild(document.createTextNode(name));
+
+    const visibleAnchor = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean).join("#");
+    if (visibleAnchor){
+      const span = document.createElement("span");
+      span.className = "wl-anchor";
+      span.textContent = "#" + visibleAnchor;
+      a.appendChild(span);
+    }
+    return a;
+  };
 
   const walk = node => {
-    [...node.childNodes].forEach(child => {
+    const children = [...node.childNodes];
+    children.forEach(child => {
       if (child.nodeType === Node.TEXT_NODE){
         const text = child.textContent;
         if (text.indexOf("[[") === -1) return;
-        const replaced = replaceText(text, resolver);
-        if (replaced !== text){
-          const frag = document.createRange().createContextualFragment(replaced);
-          child.replaceWith(frag);
+
+        const re = /\[\[([^\]]+)\]\]/g;
+        let lastIdx = 0, m;
+        const frag2 = document.createDocumentFragment();
+        let changed = false;
+
+        while ((m = re.exec(text))){
+          if (m.index > lastIdx){
+            frag2.appendChild(document.createTextNode(text.slice(lastIdx, m.index)));
+          }
+          const link = buildLink(m[1]);
+          if (link){
+            frag2.appendChild(link);
+            changed = true;
+          } else {
+            frag2.appendChild(document.createTextNode(m[0]));
+          }
+          lastIdx = m.index + m[0].length;
         }
+        if (!changed) return;
+        if (lastIdx < text.length){
+          frag2.appendChild(document.createTextNode(text.slice(lastIdx)));
+        }
+        child.replaceWith(frag2);
       } else if (child.nodeType === Node.ELEMENT_NODE){
         const tag = child.tagName.toLowerCase();
         if (tag === "code" || tag === "pre" || tag === "a") return;
@@ -555,53 +770,11 @@ function renderWikilinks(html, resolver){
     });
   };
 
-  const replaceText = (text, resolver) => {
-    return text.replace(/\[\[([^\]]+)\]\]/g, (full, rawName) => {
-      const raw = rawName.trim();
-      if (!raw) return full;
+  walk(frag);
 
-      const hashIdx = raw.indexOf("#");
-      let name, anchorStr;
-      if (hashIdx >= 0){
-        name = raw.slice(0, hashIdx).trim();
-        anchorStr = raw.slice(hashIdx + 1).trim();
-      } else {
-        name = raw;
-        anchorStr = "";
-      }
-      if (!name) return full;
-
-      const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorString(anchorStr);
-
-      let info = null;
-      try { info = resolver(name); } catch(e){ info = null; }
-      const id = info?.id || "";
-      const missing = !info?.id;
-      const cls = "wikilink" + (missing ? " missing" : "");
-
-      /* Тултип */
-      let title;
-      if (missing){
-        title = `Создать «${escape(name)}»`;
-      } else if (blockAnchor || lineAnchor || fragmentAnchor){
-        const parts = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean);
-        title = `Открыть «${escape(name)}» → #${escape(parts.join("#"))}`;
-      } else {
-        title = `Открыть «${escape(name)}»`;
-      }
-
-      /* Визуальный анкор — показываем всю цепочку после # */
-      const visibleAnchor = [blockAnchor, lineAnchor, fragmentAnchor].filter(Boolean).join("#");
-      const anchorHTML = visibleAnchor
-        ? `<span class="wl-anchor">#${escape(visibleAnchor)}</span>`
-        : "";
-
-      return `<a class="${cls}" data-wikilink="${escape(name)}" data-wikilink-id="${escape(id)}" data-wikilink-block-anchor="${escape(blockAnchor)}" data-wikilink-line-anchor="${escape(lineAnchor)}" data-wikilink-fragment-anchor="${escape(fragmentAnchor)}" title="${title}">${escape(name)}${anchorHTML}</a>`;
-    });
-  };
-
-  walk(tmp);
-  return tmp.innerHTML;
+  const div = document.createElement("div");
+  div.append(frag);
+  return div.innerHTML;
 }
 
 /* ============================================================
@@ -662,7 +835,6 @@ function recomputeDocStats(doc){
 
   let chars = 0, words = 0;
   for (const b of blocks){
-    /* ПАТЧ 2.3.1: считаем через getBlockText, он учитывает lines */
     const text = getBlockText(b);
     chars += text.length;
     words += (text.match(/\S+/g) || []).length;
@@ -727,7 +899,15 @@ function normalizeUI(raw){
     fonts:        (r.fonts && typeof r.fonts === "object") ? r.fonts : {},
     history:      Array.isArray(r.history) ? r.history.filter(x => typeof x === "string") : [],
     historyIndex: Number.isFinite(r.historyIndex) ? r.historyIndex : -1,
-    showHiddenTemplates: !!r.showHiddenTemplates
+    showHiddenTemplates: !!r.showHiddenTemplates,
+    showPreview:    r.showPreview !== false,
+    showDate:       r.showDate !== false,
+    hidePreview:    !!r.hidePreview,
+    newDocFolder:   ["root","current","inbox"].includes(r.newDocFolder) ? r.newDocFolder : "current",
+    onTabClose:     ["keep","archive","trash"].includes(r.onTabClose) ? r.onTabClose : "keep",
+    startupMode:    ["last","list"].includes(r.startupMode) ? r.startupMode : "last",
+    autoRename:     r.autoRename !== false,
+    backlinksExpanded: !!r.backlinksExpanded
   };
 }
 
@@ -755,9 +935,11 @@ function normalizeSettings(raw){
     "list:none":      "mod+shift+8",
     "edit:undo":      "mod+z",
     "edit:redo":      "mod+y",
-    "find:focus":     "mod+f",
+    "lines:panel":    "mod+shift+l",
     "lock:now":       "",
-    "block:delete":   "mod+Backspace"
+    "block:delete":   "mod+Backspace",
+    "block:new":      "mod+Enter",
+    "line:new":       "mod+shift+Enter"
   };
 
   const hotkeys = { ...HOTKEY_DEFAULTS };
@@ -772,10 +954,11 @@ function normalizeSettings(raw){
   return {
     saveDebounceMs:        Number.isFinite(r.saveDebounceMs) ? r.saveDebounceMs : SAVE_DEBOUNCE,
     inputDebounceMs:       Number.isFinite(r.inputDebounceMs) ? r.inputDebounceMs : INPUT_DEBOUNCE,
-    trashTtlDays:          Number.isFinite(r.trashTtlDays) ? r.trashTtlDays : TRASH_TTL_DAYS,
+    trashTtlDays:          Number.isFinite(r.trashTtlDays)
+                              ? Math.max(1, Math.min(365, r.trashTtlDays))
+                              : TRASH_TTL_DAYS,
     backupEveryHours:      Number.isFinite(r.backupEveryHours) ? r.backupEveryHours : 24,
     allowExternalRequests: r.allowExternalRequests !== false,
-    autoLockMinutes:       Number.isFinite(r.autoLockMinutes) ? r.autoLockMinutes : 0,
     hotkeys
   };
 }
@@ -796,17 +979,42 @@ function normalizeState(raw){
   };
 }
 
-/* ---------- HTML → text / Markdown ---------- */
+/* ============================================================
+   [Пакет 8] htmlToText — code через textContent, абзацы с <br>/<p>
+   ============================================================ */
 
 function htmlToText(html){
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
-  return tmp.innerText;
+  if (!html) return "";
+
+  const frag = parseHTMLFragment(html);
+
+  const preBlocks = frag.querySelectorAll("pre, code");
+  let preText = "";
+  preBlocks.forEach(p => {
+    preText += p.textContent + "\n";
+  });
+
+  if (preBlocks.length && !frag.textContent.replace(preText, "").trim()){
+    return preText.trimEnd();
+  }
+
+  frag.querySelectorAll("br").forEach(br => {
+    br.replaceWith(document.createTextNode("\n"));
+  });
+
+  frag.querySelectorAll("p, div, li, h1, h2, h3, h4, h5, h6, blockquote, tr")
+      .forEach(b => {
+        b.append(document.createTextNode("\n"));
+      });
+
+  return (frag.textContent || "")
+    .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
 }
 
 function htmlToMD(html){
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
+  const frag = parseHTMLFragment(html);
 
   const walk = node => {
     let out = "";
@@ -847,11 +1055,11 @@ function htmlToMD(html){
     });
     return out;
   };
-  return walk(tmp);
+  return walk(frag);
 }
 
 /* ============================================================
-   ПАТЧ 1: утилиты для floatbar-позиционирования и чистки вставки
+   Позиционирование floating-меню
    ============================================================ */
 
 function positionFloating(elTarget, anchorRect, opts = {}){
@@ -900,58 +1108,65 @@ function positionFloating(elTarget, anchorRect, opts = {}){
   elTarget.style.visibility = "visible";
 }
 
+/* ============================================================
+   [Пакет 5] cleanPastedHTML — через <template>
+   ============================================================ */
+
 function cleanPastedHTML(html){
   if (!html) return "";
 
-  const tmp = document.createElement("div");
-  tmp.innerHTML = html;
+  const frag = parseHTMLFragment(html);
 
-  tmp.querySelectorAll("span.indent-tab").forEach(n => n.remove());
+  frag.querySelectorAll("span.indent-tab").forEach(n => n.remove());
 
-  tmp.querySelectorAll("p > p, p > div, div > p, div > div").forEach(n => {
+  frag.querySelectorAll("p > p, p > div, div > p, div > div").forEach(n => {
     const parent = n.parentElement;
-    if (!parent || parent === tmp) return;
+    if (!parent) return;
     const br = document.createElement("br");
     n.replaceWith(br);
     while (n.firstChild) br.parentNode.insertBefore(n.firstChild, br);
   });
 
-  tmp.querySelectorAll("li > p").forEach(p => {
-    const frag = document.createDocumentFragment();
-    while (p.firstChild) frag.append(p.firstChild);
-    p.replaceWith(frag);
+  frag.querySelectorAll("li > p").forEach(p => {
+    const f = document.createDocumentFragment();
+    while (p.firstChild) f.append(p.firstChild);
+    p.replaceWith(f);
   });
 
-  while (tmp.lastChild && tmp.lastChild.nodeName === "BR"){
-    tmp.lastChild.remove();
+  const div = document.createElement("div");
+  div.append(frag);
+
+  while (div.lastChild && div.lastChild.nodeName === "BR"){
+    div.lastChild.remove();
   }
 
-  tmp.innerHTML = tmp.innerHTML.replace(/(<br\s*\/?>\s*){3,}/gi, "<br><br>");
+  div.innerHTML = div.innerHTML.replace(/(<br\s*\/?>\s*){3,}/gi, "<br><br>");
 
-  return tmp.innerHTML;
+  return div.innerHTML;
 }
 
 return {
   KEY, HISTORY_LIMIT, INPUT_DEBOUNCE, SAVE_DEBOUNCE, MAX_IMG_BYTES, TRASH_TTL_DAYS,
   types, VALID_TYPES, VALID_BG, VALID_FONT, VALID_INDENT, VALID_ALIGN, VALID_MARKER,
-  /* ПАТЧ 2.1 */
   VALID_VALIGN,
-  /* ПАТЧ 2.3.1 */
   LINE_TYPES,
   EMOJI_PRESETS, COLOR_PRESETS,
   $, $$, uid, shortId, now, escape, el, isArrayOfArrays, block, toast,
   sanitize,
   sanitizeAnchor,
-  /* ПАТЧ 2.3.1 */
-  line, normalizeLine, syncBlockLines, getBlockText, getBlockHTML,
+  /* [Пакет 5] */
+  parseHTMLFragment, parseHTMLToDiv,
+  /* строки */
+  line, normalizeLine, syncBlockLines, getBlockText, getBlockHTML, setBlockHTML,
   findLine, findLineIndex, parseAnchorString,
+  /* [Пакет 12] */
+  isValidId, validateDocId, convertBlockType,
   normalizeBlock, normalizeDocument, normalizeTemplate, normalizeFolder, normalizeTag,
   normalizeUI, normalizeSettings, normalizeState,
   recomputeDocStats,
   blockToHTML,
   extractWikilinks, renderWikilinks,
   htmlToText, htmlToMD,
-  /* ПАТЧ 1 */
   positionFloating,
   cleanPastedHTML
 };

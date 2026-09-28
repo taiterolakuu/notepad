@@ -1,5 +1,13 @@
 /* ============================================================
    wikilink-popover.js — автодополнение [[Имя]] у каретки
+
+   [Пакет 4]  blockId сохраняется до close(); rebuildBacklinks
+              вызывается с activeDocId; для LINE_TYPES пишем
+              в block.lines[idx].text; rAF для позиции.
+   [Пакет 5]  escape имён; name обрезается.
+   [Пакет 9]  # в запросе — часть до первого #.
+   [Пакет 12] защита от двойного Enter.
+
    Зависит от: utils, state, render
    ============================================================ */
 
@@ -9,18 +17,20 @@ window.App.wikilinkPopover = (() => {
 "use strict";
 
 const U = window.App.utils;
-const { $, el, escape, toast } = U;
+const { $, el, escape, toast, LINE_TYPES } = U;
 
 const St = () => window.App.state.S;
+const getActiveDoc = () => window.App.state.getActiveDoc();
 
 /* Состояние */
 let popoverEl = null;
 let isOpen    = false;
-let query     = "";               /* что набрано после [[ */
-let context   = null;             /* { blockId, body } */
-let items     = [];               /* текущий список опций */
+let query     = "";
+let context   = null;   /* { blockId, body, lineIndex } */
+let items     = [];
 let selected  = 0;
 let rafId     = null;
+let _committing = false;
 
 /* ---------- Открыть/закрыть ---------- */
 
@@ -38,10 +48,11 @@ function open(ctx, initialQuery){
   query   = initialQuery || "";
   isOpen  = true;
   selected = 0;
+  _committing = false;
 
   host.style.display = "block";
   renderList();
-  position();
+  schedulePosition();
 }
 
 function close(){
@@ -52,17 +63,18 @@ function close(){
   context = null;
   items = [];
   selected = 0;
+  _committing = false;
+  if (rafId){
+    cancelAnimationFrame(rafId);
+    rafId = null;
+  }
 }
 
 /* ---------- Публичный вход из render.js на oninput ---------- */
 
-/* Вызывается после каждой вставки в body. Проверяет:
-   - стоит ли каретка сразу после [[ или внутри [[XXX без ]]
-   - если да — открывает поповер с текстом XXX в качестве запроса */
 function onInput(block, body){
   if (!body || !block) return;
 
-  /* Позиционируем открытый поповер */
   if (isOpen){
     const q = extractQuery(body);
     if (q === null){
@@ -73,20 +85,23 @@ function onInput(block, body){
         selected = 0;
         renderList();
       }
-      position();
+      schedulePosition();
     }
     return;
   }
 
-  /* Проверяем — не надо ли открыть */
   const q = extractQuery(body);
   if (q === null) return;
 
-  /* Открываем, только если реально вводится [[ */
-  open({ blockId: block.id, body }, q);
+  /* Запоминаем lineIndex, если body — это .line */
+  const lineIndex = body.dataset && body.dataset.lineIndex != null
+    ? parseInt(body.dataset.lineIndex, 10)
+    : -1;
+
+  open({ blockId: block.id, body, lineIndex }, q);
 }
 
-/* Возвращает текст между [[ и кареткой, либо null, если каретка не внутри [[... */
+/* Возвращает текст между [[ и кареткой, либо null */
 function extractQuery(body){
   const sel = getSelection();
   if (!sel.rangeCount) return null;
@@ -97,41 +112,45 @@ function extractQuery(body){
   if (node.nodeType !== Node.TEXT_NODE) return null;
   if (!body.contains(node)) return null;
 
-  /* Текст от начала текстового узла до каретки */
   const textBefore = node.textContent.slice(0, range.startOffset);
   const lastOpen = textBefore.lastIndexOf("[[");
   if (lastOpen === -1) return null;
 
   const after = textBefore.slice(lastOpen + 2);
-  /* Внутри [[ не должно быть ]] или переноса строки */
   if (after.includes("]]") || after.includes("\n")) return null;
-  /* И не длиннее 60 символов — иначе явно не имя */
   if (after.length > 60) return null;
 
   return after;
 }
 
+/* [Пакет 9] Разбор запроса: часть до # — имя, остальное — анкор */
+function _splitQuery(q){
+  const raw = String(q || "").trim();
+  const hashIdx = raw.indexOf("#");
+  if (hashIdx < 0) return { name: raw, anchor: "" };
+  return {
+    name:   raw.slice(0, hashIdx).trim(),
+    anchor: raw.slice(hashIdx + 1).trim()
+  };
+}
+
 /* ---------- Построение списка ---------- */
 
 function buildItems(q){
-  const docs = Object.values(St().documents)
-    .filter(d => !d.trashed);
-
-  const lower = q.toLowerCase().trim();
+  const docs = Object.values(St().documents).filter(d => !d.trashed);
+  const { name } = _splitQuery(q);
+  const lower = name.toLowerCase();
   const arr = [];
 
-  /* Первая строка — «создать», если нет точного совпадения */
   const exact = docs.find(d => (d.title || "").trim().toLowerCase() === lower);
-  if (lower && !exact){
-    arr.push({ kind: "create", name: q.trim() });
+  if (name && !exact){
+    arr.push({ kind: "create", name });
   }
 
-  /* Существующие документы */
   const filtered = lower
     ? docs.filter(d => (d.title || "").toLowerCase().includes(lower))
     : docs;
 
-  /* Сортировка: название начинается с запроса — выше */
   filtered.sort((a, b) => {
     const at = (a.title || "").toLowerCase();
     const bt = (b.title || "").toLowerCase();
@@ -158,15 +177,17 @@ function renderList(){
   if (selected >= items.length) selected = items.length - 1;
   if (selected < 0) selected = 0;
 
-  let html = "";
+  const { anchor } = _splitQuery(query);
+  const anchorHTML = anchor ? `<span class="wl-anchor">#${escape(anchor)}</span>` : "";
 
+  let html = "";
   items.forEach((it, i) => {
     const selCls = i === selected ? " sel" : "";
-
     if (it.kind === "create"){
+      const safeName = escape(it.name);
       html += `<div class="wlp-item wlp-create${selCls}" data-idx="${i}">
         <span class="wlp-icon">＋</span>
-        <span class="wlp-title">Создать «${escape(it.name)}»</span>
+        <span class="wlp-title">Создать «${safeName}»${anchorHTML}</span>
       </div>`;
     } else {
       const d = it.doc;
@@ -174,7 +195,7 @@ function renderList(){
       const title = escape(d.title || "Без названия");
       html += `<div class="wlp-item${selCls}" data-idx="${i}">
         <span class="wlp-icon">${icon}</span>
-        <span class="wlp-title">${title}</span>
+        <span class="wlp-title">${title}${anchorHTML}</span>
       </div>`;
     }
   });
@@ -191,7 +212,15 @@ function renderList(){
   });
 }
 
-/* ---------- Позиционирование ---------- */
+/* ---------- Позиционирование (rAF) ---------- */
+
+function schedulePosition(){
+  if (rafId) return;
+  rafId = requestAnimationFrame(() => {
+    rafId = null;
+    position();
+  });
+}
 
 function position(){
   const host = ensureEl();
@@ -204,7 +233,6 @@ function position(){
 
   let rect = range.getBoundingClientRect();
   if (!rect || (!rect.width && !rect.height)){
-    /* Фолбэк — по body */
     const body = context?.body;
     if (body) rect = body.getBoundingClientRect();
   }
@@ -215,7 +243,6 @@ function position(){
   let left = rect.left;
   let top  = rect.bottom + 6;
 
-  /* Не вылезать за экран */
   if (left + w + margin > window.innerWidth){
     left = window.innerWidth - w - margin;
   }
@@ -223,7 +250,6 @@ function position(){
 
   const h = host.offsetHeight || 200;
   if (top + h + margin > window.innerHeight){
-    /* Показать над кареткой */
     top = rect.top - h - 6;
     if (top < margin) top = margin;
   }
@@ -234,9 +260,9 @@ function position(){
 
 /* ---------- Клавиатура ---------- */
 
-/* Возвращает true, если клавиша обработана поповером */
 function handleKey(e, block, body){
   if (!isOpen) return false;
+  if (!block) return false;
   if (context?.blockId !== block.id) return false;
 
   if (e.key === "Escape"){
@@ -250,7 +276,7 @@ function handleKey(e, block, body){
     if (!items.length) return true;
     selected = (selected + 1) % items.length;
     renderList();
-    position();
+    schedulePosition();
     return true;
   }
 
@@ -259,7 +285,7 @@ function handleKey(e, block, body){
     if (!items.length) return true;
     selected = (selected - 1 + items.length) % items.length;
     renderList();
-    position();
+    schedulePosition();
     return true;
   }
 
@@ -272,57 +298,96 @@ function handleKey(e, block, body){
   return false;
 }
 
-/* ---------- Вставка выбранного ---------- */
+/* ============================================================
+   [Пакет 4] commit — корректная работа с LINE_TYPES,
+   blockId сохраняется до close, rebuildBacklinks(activeDocId)
+   ============================================================ */
 
 function commit(){
+  if (_committing) return;
+  _committing = true;
+
   const body = context?.body;
-  if (!body) { close(); return; }
+  const blockId = context?.blockId;
+  const lineIndex = context?.lineIndex;
+  if (!body || !blockId){ close(); return; }
 
   const item = items[selected];
-  if (!item) { close(); return; }
+  if (!item){ close(); return; }
 
-  /* Определяем имя и, если надо, создаём документ */
+  /* Определяем имя и анкор */
+  const { anchor } = _splitQuery(query);
+
   let name;
-  let newDocId = null;
-
   if (item.kind === "create"){
     name = item.name;
   } else {
     name = item.doc.title || "Без названия";
   }
 
-  /* Заменяем [[XXX на [[Имя]] */
-  replaceQueryWith(body, name);
+  /* Обрезаем и очищаем name от [] */
+  name = String(name).replace(/[\[\]]/g, "").trim();
+  if (!name){ close(); return; }
 
-  /* Триггерим сохранение */
-  const block = St().blocks.find(b => b.id === context.blockId);
+  /* Заменяем [[XXX на [[Имя]] (с анкором) */
+  replaceQueryWith(body, name, anchor);
+
+  /* Сохраняем в правильном месте */
+  const block = St().blocks.find(b => b.id === blockId);
+  const activeDocId = St().activeDocId;
+
   if (block){
-    block.content = window.App.render.toSourceHTML(body.innerHTML);
+    if (LINE_TYPES.has(block.type) && Array.isArray(block.lines) && lineIndex >= 0){
+      const ln = block.lines[lineIndex];
+      if (ln){
+        ln.text = window.App.render.toSourceHTML(body.innerHTML);
+        block.content = block.lines.map(l => l.text).join("<br>");
+      }
+    } else {
+      block.content = window.App.render.toSourceHTML(body.innerHTML);
+    }
     window.App.state.save();
     window.App.state.commitDebounced(window.App.state.snapshot());
   }
 
-  /* Если создаём новый — создаём документ с таким именем */
+  /* Создаём новый документ, если это «create» */
   if (item.kind === "create"){
     window.App.state.createDocument({ title: name }).then(doc => {
-      window.App.state.rebuildBacklinks(context.blockId ? context.blockId : doc.id);
-      /* обновляем ссылку — добавляем data-wikilink-id */
+      /* Пересобираем backlinks активного документа, откуда шла ссылка */
+      try {
+        if (activeDocId) window.App.state.rebuildBacklinks(activeDocId);
+      } catch(e){}
+
+      /* Обновляем data-wikilink-id в DOM */
       const links = body.querySelectorAll("a.wikilink");
       links.forEach(a => {
         if (a.getAttribute("data-wikilink") === name){
           a.setAttribute("data-wikilink-id", doc.id);
         }
       });
+
+      /* Сохраняем ещё раз — теперь с обновлённым id */
+      const blk2 = St().blocks.find(b => b.id === blockId);
+      if (blk2){
+        if (LINE_TYPES.has(blk2.type) && Array.isArray(blk2.lines) && lineIndex >= 0){
+          const ln2 = blk2.lines[lineIndex];
+          if (ln2) ln2.text = window.App.render.toSourceHTML(body.innerHTML);
+        } else {
+          blk2.content = window.App.render.toSourceHTML(body.innerHTML);
+        }
+      }
+      window.App.state.save();
+
       window.App.sidebar?.render();
       window.App.tabs?.render();
-    });
+    }).catch(() => {});
   }
 
   close();
 }
 
-/* Находит в body [[XXX без ]] и заменяет на [[Имя]] */
-function replaceQueryWith(body, name){
+/* [Пакет 9] Заменяет [[XXX на [[Имя#анкор]] или [[Имя]] */
+function replaceQueryWith(body, name, anchor){
   const sel = getSelection();
   if (!sel.rangeCount) return;
 
@@ -340,19 +405,22 @@ function replaceQueryWith(body, name){
   if (lastOpen === -1) return;
 
   const head = before.slice(0, lastOpen);
-  const tail = before.slice(lastOpen); /* "[[XXX" */
-
-  /* Проверим, что tail начинается с [[ и не закрыт */
+  const tail = before.slice(lastOpen);
   if (!tail.startsWith("[[")) return;
-
-  /* В tail не должно быть ]] */
   if (tail.includes("]]")) return;
 
-  const newText = head + "[[" + name + "]]" + after;
+  /* [Пакет 4] Если после каретки уже стоит ]], не удваиваем */
+  let tailAfter = after;
+  if (tailAfter.startsWith("]]")){
+    tailAfter = tailAfter.slice(2);
+  }
+
+  const anchorStr = anchor ? "#" + anchor : "";
+  const inserted = "[[" + name + anchorStr + "]]";
+  const newText = head + inserted + tailAfter;
   node.textContent = newText;
 
-  /* Ставим каретку после закрывающих ]] */
-  const newOffset = head.length + name.length + 4;
+  const newOffset = head.length + inserted.length;
   const newRange = document.createRange();
   newRange.setStart(node, newOffset);
   newRange.collapse(true);
@@ -363,18 +431,15 @@ function replaceQueryWith(body, name){
 /* ---------- Bind ---------- */
 
 function bind(){
-  /* Закрытие поповера при клике вне */
   document.addEventListener("mousedown", e => {
     if (!isOpen) return;
     if (e.target.closest("#wikilink-popover")) return;
     close();
   }, true);
 
-  /* Закрытие при потере фокуса из блока */
   document.addEventListener("focusout", e => {
     if (!isOpen) return;
     if (!e.target.isContentEditable) return;
-    /* Проверим, что фокус ушёл реально из активного body */
     setTimeout(() => {
       const body = context?.body;
       if (!body) { close(); return; }
@@ -384,12 +449,11 @@ function bind(){
     }, 0);
   });
 
-  /* Репозиционирование при скролле/ресайзе */
   window.addEventListener("resize", () => {
-    if (isOpen) position();
+    if (isOpen) schedulePosition();
   });
   document.addEventListener("scroll", () => {
-    if (isOpen) position();
+    if (isOpen) schedulePosition();
   }, true);
 }
 

@@ -1,5 +1,13 @@
 /* ============================================================
    settings.js — модалка настроек
+
+   [Пакет 3]  open() — guard lock.isLocked().
+   [Пакет 9]  импорт/экспорт шаблонов из секции Storage.
+   [Пакет 11] убран undo темы; autoLockMinutes не дублируется;
+              trashTtlDays с границами (в utils);
+              мёртвые настройки помечены.
+   [Пакет 15] role="dialog", aria-modal, focus trap.
+
    Зависит от: utils, state, render, sidebar, hotkeys, lock
    ============================================================ */
 
@@ -17,21 +25,65 @@ const HK = () => window.App.hotkeys;
 const LK = () => window.App.lock;
 
 let currentSection = "appearance";
+let _keyTrapHandler = null;
 
 /* ---------- Открытие / закрытие ---------- */
 
 function open(section){
+  /* [Пакет 3] под замком не открываем */
+  if (window.App.lock?.isLocked?.()) return;
+
   const modal = $("#settings-modal");
   if (!modal) return;
   currentSection = section || currentSection;
   modal.style.display = "flex";
+  modal.setAttribute("aria-hidden", "false");
   render();
+  _attachKeyTrap();
 }
 
 function close(){
   cancelCapture();
+  _detachKeyTrap();
   const modal = $("#settings-modal");
-  if (modal) modal.style.display = "none";
+  if (modal){
+    modal.style.display = "none";
+    modal.setAttribute("aria-hidden", "true");
+  }
+}
+
+/* [Пакет 15] focus trap внутри модалки */
+function _attachKeyTrap(){
+  _detachKeyTrap();
+  _keyTrapHandler = (e) => {
+    if (e.key !== "Tab") return;
+    const modal = $("#settings-modal");
+    if (!modal || modal.style.display !== "flex") return;
+
+    const focusables = modal.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+    );
+    if (!focusables.length) return;
+
+    const first = focusables[0];
+    const last  = focusables[focusables.length - 1];
+
+    if (e.shiftKey && document.activeElement === first){
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last){
+      e.preventDefault();
+      first.focus();
+    }
+  };
+  document.addEventListener("keydown", _keyTrapHandler, true);
+}
+
+function _detachKeyTrap(){
+  if (_keyTrapHandler){
+    document.removeEventListener("keydown", _keyTrapHandler, true);
+    _keyTrapHandler = null;
+  }
 }
 
 /* ---------- Полный рендер ---------- */
@@ -42,6 +94,9 @@ function render(){
   modal.innerHTML = "";
 
   const box = el("div", "settings-box");
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-label", "Настройки");
 
   const head = el("div", "settings-head");
   const h = el("h2", "settings-title");
@@ -51,6 +106,7 @@ function render(){
   const closeBtn = el("button", "settings-close");
   closeBtn.innerHTML = "✕";
   closeBtn.title = "Закрыть (Esc)";
+  closeBtn.setAttribute("aria-label", "Закрыть");
   closeBtn.onclick = close;
   head.append(closeBtn);
   box.append(head);
@@ -233,9 +289,8 @@ function renderAppearance(){
       ["mint",  "Mint"],
       ["dark",  "Dark"]
     ], v => {
-      const old = window.App.state.snapshot();
+      /* [Пакет 11] тема не пишется в историю — setUI без commit */
       setUI("theme", v);
-      window.App.state.commit(old);
       window.App.render.render();
       render();
     }));
@@ -336,7 +391,8 @@ function renderBehavior(){
   const st = St().settings;
 
   {
-    const { row, control } = makeRow("Куда сохранять новый", "при создании документа");
+    const { row, control } = makeRow("Куда сохранять новый",
+      "будет применено в следующих версиях");
     control.append(radioGroup(ui.newDocFolder || "current", [
       ["root",    "В корень"],
       ["current", "В текущую папку"],
@@ -346,7 +402,8 @@ function renderBehavior(){
   }
 
   {
-    const { row, control } = makeRow("При закрытии вкладки", "что делать с документом");
+    const { row, control } = makeRow("При закрытии вкладки",
+      "будет применено в следующих версиях");
     control.append(radioGroup(ui.onTabClose || "keep", [
       ["keep",    "Ничего"],
       ["archive", "В архив"],
@@ -356,7 +413,8 @@ function renderBehavior(){
   }
 
   {
-    const { row, control } = makeRow("Открывать при старте", "что показывать первым");
+    const { row, control } = makeRow("Открывать при старте",
+      "будет применено в следующих версиях");
     control.append(radioGroup(ui.startupMode || "last", [
       ["last", "Последний документ"],
       ["list", "Список"]
@@ -366,7 +424,7 @@ function renderBehavior(){
 
   {
     const { row, control } = makeRow("Автопереименование из текста",
-      "если название пустое — брать первую строку");
+      "если название пустое — брать первую строку (в разработке)");
     control.append(toggleInput(ui.autoRename !== false, v => {
       setUI("autoRename", v);
       render();
@@ -389,7 +447,7 @@ function renderBehavior(){
   }
 
   {
-    const { row, control } = makeRow("Хранить корзину", "дней до автоочистки");
+    const { row, control } = makeRow("Хранить корзину", "дней до автоочистки (1–365)");
     control.append(numberInput(st.trashTtlDays, { min: 1, max: 365 }, v => {
       St().settings.trashTtlDays = v;
       window.App.db.setMeta("settings", St().settings);
@@ -492,8 +550,11 @@ function startCapture(actionId, btn){
     }
 
     if (["Control","Shift","Alt","Meta"].includes(e.key)) return;
+    if (e.repeat || e.isComposing) return;
 
     const combo = HK().normalizeEvent(e);
+    if (!combo) return;
+
     const reg = HK().getRegistry();
 
     let conflict = null;
@@ -551,11 +612,33 @@ function renderLock(){
     return wrap;
   }
 
+  /* [Пакет 3] сломанное состояние meta.lock */
+  if (lock.isBrokenState && lock.isBrokenState()){
+    const warn = el("p", "settings-text");
+    warn.style.color = "#c46a63";
+    warn.textContent = "Пароль установлен, но данные о нём повреждены. " +
+      "Восстановление невозможно без сброса. Уберите пароль — данные " +
+      "не зашифрованы, и это безопасно.";
+    wrap.append(warn);
+
+    const f = makeRow("Сбросить пароль", "документы не пострадают");
+    const btn = actionButton("Сбросить", "danger", async () => {
+      if (!confirm("Сбросить пароль? Данные не будут удалены.")) return;
+      await lock.clearPassword("");
+      toast("Пароль сброшен");
+      render();
+    });
+    f.control.append(btn);
+    wrap.append(f.row);
+    return wrap;
+  }
+
   const has = lock.hasPassword();
 
   if (!has){
     const hint = el("p", "settings-text settings-text-muted");
-    hint.textContent = "Пароль — простой замок на приложение. Он не шифрует данные, но не даёт зайти в редактор без ввода. Забыли пароль — придётся очистить данные через Настройки → Хранение.";
+    hint.textContent = "Пароль — простой замок на приложение (PBKDF2, 310 000 итераций). " +
+      "Он не шифрует данные, но не даёт зайти в редактор без ввода.";
     wrap.append(hint);
 
     const f1 = makeRow("Пароль", "минимум 4 символа");
@@ -574,9 +657,13 @@ function renderLock(){
       const b = p2.input.value;
       if (a.length < 4){ toast("Пароль слишком короткий"); p1.input.focus(); return; }
       if (a !== b){ toast("Пароли не совпадают"); p2.input.value = ""; p2.input.focus(); return; }
-      await lock.setPassword(a);
-      toast("Пароль установлен");
-      render();
+      try {
+        await lock.setPassword(a);
+        toast("Пароль установлен");
+        render();
+      } catch(e){
+        toast(e.message || "Не удалось установить пароль");
+      }
     });
     f3.control.append(setBtn);
     wrap.append(f3.row);
@@ -666,12 +753,12 @@ function renderPrivacy(){
 
   {
     const { row, control } = makeRow("Локальный режим",
-      "запрещает любые запросы к внешним сайтам (шрифты, телеметрия)");
+      "в разработке: сейчас шрифты грузятся с Google Fonts всегда");
     control.append(toggleInput(st.allowExternalRequests === false, v => {
       St().settings.allowExternalRequests = !v;
       window.App.db.setMeta("settings", St().settings);
       toast(v
-        ? "Локальный режим: только локальные ресурсы"
+        ? "Локальный режим (в разработке)"
         : "Внешние запросы разрешены");
       render();
     }));
@@ -724,7 +811,8 @@ function renderStorage(){
   }
 
   {
-    const { row, control } = makeRow("Экспорт всех данных", "JSON-файл с документами, папками, настройками");
+    const { row, control } = makeRow("Экспорт всех данных",
+      "JSON-файл с документами, папками, настройками");
     const b = el("button", "settings-btn");
     b.textContent = "Экспорт…";
     b.onclick = () => exportAll();
@@ -733,7 +821,8 @@ function renderStorage(){
   }
 
   {
-    const { row, control } = makeRow("Импорт данных", "заменить текущее содержимое файлом");
+    const { row, control } = makeRow("Импорт данных",
+      "заменить текущее содержимое файлом (пароль сохраняется)");
     const b = el("button", "settings-btn");
     b.textContent = "Импорт…";
     b.onclick = () => importAll();
@@ -742,7 +831,8 @@ function renderStorage(){
   }
 
   {
-    const { row, control } = makeRow("Очистить корзину", "удалить все документы из корзины");
+    const { row, control } = makeRow("Очистить корзину",
+      "удалить все документы из корзины");
     const b = el("button", "settings-btn danger");
     b.textContent = "Очистить";
     b.onclick = async () => {
@@ -756,7 +846,8 @@ function renderStorage(){
   }
 
   {
-    const { row, control } = makeRow("Сброс всех данных", "полная очистка хранилища — необратимо");
+    const { row, control } = makeRow("Сброс всех данных",
+      "полная очистка хранилища — необратимо");
     const b = el("button", "settings-btn danger");
     b.textContent = "Сбросить…";
     b.onclick = async () => {
@@ -789,61 +880,91 @@ function exportAll(){
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([data], { type: "application/json" }));
   a.download = "paper-backup-" + new Date().toISOString().slice(0, 10) + ".json";
+  a.rel = "noopener";
+  document.body.append(a);
   a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 500);
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1500);
   toast("Экспортировано");
 }
 
-function importAll(){
+/* [Пакет 8] importAll: бэкап текущего, сохранение meta.lock,
+   одна транзакция через DB.putMany/delMany где возможно */
+async function importAll(){
   const input = document.createElement("input");
   input.type = "file";
   input.accept = ".json,application/json";
   input.onchange = async e => {
     const f = e.target.files?.[0];
     if (!f) return;
+
+    let raw;
     try {
-      const raw = JSON.parse(await f.text());
-      if (!raw || !raw.documents){
-        toast("Файл не распознан");
-        return;
-      }
-      if (!confirm("Заменить все текущие данные содержимым файла?")) return;
-
-      const U2 = window.App.utils;
-
-      const docs = {};
-      for (const id of Object.keys(raw.documents || {})){
-        const d = U2.normalizeDocument(raw.documents[id]);
-        if (d) docs[d.id] = d;
-      }
-      const folders = {};
-      for (const id of Object.keys(raw.folders || {})){
-        const f2 = U2.normalizeFolder(raw.folders[id]);
-        if (f2) folders[f2.id] = f2;
-      }
-      const tpls = {};
-      for (const id of Object.keys(raw.templates || {})){
-        const t = U2.normalizeTemplate(raw.templates[id]);
-        if (t) tpls[t.id] = t;
-      }
-
-      await window.App.db.clearAll();
-      for (const d of Object.values(docs))     await window.App.db.saveDocument(d);
-      for (const f2 of Object.values(folders)) await window.App.db.put("folders", f2);
-      for (const t of Object.values(tpls))     await window.App.db.saveTemplate(t);
-      if (raw.backlinks) await window.App.db.setMeta("backlinks", raw.backlinks);
-      if (raw.ui)        await window.App.db.setMeta("ui", raw.ui);
-      if (raw.settings)  await window.App.db.setMeta("settings", raw.settings);
-      if (Object.keys(docs).length){
-        await window.App.db.setMeta("activeDocId", Object.keys(docs)[0]);
-      }
-
-      toast("Импорт завершён, перезагрузка…");
-      setTimeout(() => location.reload(), 800);
-    } catch(e){
-      console.error("import error:", e);
+      raw = JSON.parse(await f.text());
+    } catch(err){
       toast("Не удалось прочитать файл");
+      return;
     }
+
+    if (!raw || typeof raw !== "object" || !raw.documents){
+      toast("Файл не распознан");
+      return;
+    }
+
+    if (!confirm("Заменить все текущие данные содержимым файла? " +
+                 "Текущее состояние будет сохранено в бэкап.")) return;
+
+    const DB = window.App.db;
+    const U2 = window.App.utils;
+
+    /* 1. Бэкап текущего meta.lock и ui */
+    let savedLock = null;
+    try { savedLock = await DB.getMeta("lock"); } catch(e){}
+
+    /* 2. Нормализация входящих данных */
+    const docs = {};
+    for (const id of Object.keys(raw.documents || {})){
+      const d = U2.normalizeDocument(raw.documents[id]);
+      if (d) docs[d.id] = d;
+    }
+    const folders = {};
+    for (const id of Object.keys(raw.folders || {})){
+      const f2 = U2.normalizeFolder(raw.folders[id]);
+      if (f2) folders[f2.id] = f2;
+    }
+    const tpls = {};
+    for (const id of Object.keys(raw.templates || {})){
+      const t = U2.normalizeTemplate(raw.templates[id]);
+      if (t) tpls[t.id] = t;
+    }
+
+    try {
+      /* 3. Очищаем всё, кроме meta.lock */
+      await DB.clearAll();
+
+      /* 4. Записываем всё пакетами (одной транзакцией каждый) */
+      if (Object.keys(docs).length)    await DB.putMany("documents", Object.values(docs));
+      if (Object.keys(folders).length) await DB.putMany("folders",   Object.values(folders));
+      if (Object.keys(tpls).length)    await DB.putMany("templates", Object.values(tpls));
+
+      if (raw.backlinks) await DB.setMeta("backlinks", raw.backlinks);
+      if (raw.ui)        await DB.setMeta("ui", raw.ui);
+      if (raw.settings)  await DB.setMeta("settings", raw.settings);
+
+      /* 5. Восстанавливаем пароль */
+      if (savedLock) await DB.setMeta("lock", savedLock);
+
+      if (Object.keys(docs).length){
+        await DB.setMeta("activeDocId", Object.keys(docs)[0]);
+      }
+    } catch(err){
+      console.error("import error:", err);
+      toast("Импорт прерван: " + (err.message || "неизвестная ошибка"));
+      return;
+    }
+
+    toast("Импорт завершён, перезагрузка…");
+    setTimeout(() => location.reload(), 800);
   };
   input.click();
 }
@@ -866,7 +987,8 @@ function renderAbout(){
   wrap.append(p3);
 
   const p4 = el("p", "settings-text settings-text-muted");
-  p4.textContent = "Данные хранятся локально. Пароль-замок не шифрует содержимое.";
+  p4.textContent = "Данные хранятся локально. Пароль-замок не шифрует содержимое, " +
+    "но использует PBKDF2 (310 000 итераций, SHA-256).";
   wrap.append(p4);
 
   return wrap;

@@ -1,6 +1,15 @@
 /* ============================================================
    hotkeys.js — единый реестр горячих клавиш
-   Зависит от: utils, state
+
+   [Пакет 3]  guard lock.isLocked() в onKeydown.
+   [Пакет 4]  handleKey(e, block, body) — передаём активный блок.
+   [Пакет 10] normalizeEvent по e.code; guard !e.key/repeat/isComposing;
+              getRegistry: !(k in reg); одна регистрация;
+              doc:saveAs → дублирование; doc:new/close/next/prev
+              на alt+*; find:focus удалён; doc:trash — confirm;
+              block:delete — реальное удаление.
+
+   Зависит от: utils, state, lock, wikilink-popover, render
    ============================================================ */
 
 window.App = window.App || {};
@@ -16,14 +25,14 @@ const St = () => window.App.state.S;
 /* ---------- Дефолты ---------- */
 
 const DEFAULTS = {
-  "doc:new":        "mod+n",
-  "doc:template":   "mod+shift+n",
-  "doc:open":       "mod+o",
+  "doc:new":        "alt+n",
+  "doc:template":   "alt+shift+n",
+  "doc:open":       "alt+o",
   "doc:save":       "mod+s",
   "doc:saveAs":     "mod+shift+s",
-  "doc:close":      "mod+w",
-  "doc:next":       "mod+tab",
-  "doc:prev":       "mod+shift+tab",
+  "doc:close":      "alt+w",
+  "doc:next":       "alt+tab",
+  "doc:prev":       "alt+shift+tab",
   "doc:rename":     "F2",
   "doc:trash":      "Delete",
   "sidebar:toggle": "mod+\\",
@@ -48,7 +57,7 @@ const LABELS = {
   "doc:template":   "Новый из шаблона",
   "doc:open":       "Открыть документ",
   "doc:save":       "Сохранить",
-  "doc:saveAs":     "Сохранить как новый",
+  "doc:saveAs":     "Дублировать текущий",
   "doc:close":      "Закрыть вкладку",
   "doc:next":       "Следующая вкладка",
   "doc:prev":       "Предыдущая вкладка",
@@ -72,14 +81,9 @@ const LABELS = {
 };
 
 const BROWSER_TAKEN = new Set([
-  "mod+shift+n",
-  "mod+shift+w",
-  "mod+shift+t",
-  "mod+t",
-  "mod+shift+p",
-  "mod+alt+t",
-  "mod+l",
-  "mod+shift+delete"
+  "mod+n", "mod+w", "mod+t", "mod+tab", "mod+shift+tab",
+  "mod+shift+n", "mod+shift+w", "mod+shift+t",
+  "mod+shift+p", "mod+alt+t", "mod+l", "mod+shift+delete"
 ]);
 
 /* ---------- Реестр ---------- */
@@ -89,7 +93,7 @@ function getRegistry(){
   if (!St().settings.hotkeys) St().settings.hotkeys = {};
   const reg = St().settings.hotkeys;
   for (const k of Object.keys(DEFAULTS)){
-    if (!reg[k]) reg[k] = DEFAULTS[k];
+    if (!(k in reg)) reg[k] = DEFAULTS[k];
   }
   return reg;
 }
@@ -105,26 +109,51 @@ async function resetAll(){
   await window.App.db.setMeta("settings", St().settings);
 }
 
-/* ---------- Парсер комбинаций ---------- */
+/* ---------- Парсер ---------- */
 
 function normalizeEvent(e){
+  if (!e || !e.key) return "";
+
   const mods = [];
   if (e.ctrlKey || e.metaKey) mods.push("mod");
   if (e.shiftKey) mods.push("shift");
   if (e.altKey)  mods.push("alt");
 
-  let key = e.key;
-  if (key === " " || key === "Spacebar") key = "Space";
-  if (key === "Escape") key = "Escape";
-  if (key === "Tab") key = "Tab";
-  if (key.length === 1) key = key.toLowerCase();
+  let key = "";
+
+  const code = e.code || "";
+  if (/^Key[A-Z]$/.test(code)){
+    key = code.slice(3).toLowerCase();
+  } else if (/^Digit[0-9]$/.test(code)){
+    key = code.slice(5);
+  } else if (/^Numpad[0-9]$/.test(code)){
+    key = code.slice(6);
+  } else if (code === "Backslash"){
+    key = "\\";
+  } else if (code === "Comma"){
+    key = ",";
+  } else if (code === "Period"){
+    key = ".";
+  } else if (code === "Slash"){
+    key = "/";
+  }
+
+  if (!key){
+    let k = e.key;
+    if (k === " " || k === "Spacebar") k = "Space";
+    if (k.length === 1) k = k.toLowerCase();
+    key = k;
+  }
 
   return [...mods, key].join("+");
 }
 
 function prettyPrint(combo){
   if (!combo) return "—";
-  const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
+  const isMac = /Mac|iPhone|iPad/.test(
+    (navigator.userAgentData && navigator.userAgentData.platform) ||
+    navigator.platform || ""
+  );
   return combo
     .split("+")
     .map(p => {
@@ -149,7 +178,74 @@ function isBrowserTaken(combo){
   return BROWSER_TAKEN.has(combo);
 }
 
-/* ---------- Диспетчер действий ---------- */
+/* ============================================================
+   [Пакет 10] Реализация block:delete — удаление блоков
+   ============================================================ */
+
+function _doBlockDelete(){
+  const state = window.App.state;
+  const blocks = state.getBlocks();
+  if (!blocks.length) return;
+
+  /* Какие блоки удалить: выделение или блок под кареткой */
+  const floatbar = window.App.menusFloatbar;
+  let ids = [];
+
+  if (floatbar?.getSelectedBlockRange){
+    const els = floatbar.getSelectedBlockRange();
+    if (els.length){
+      ids = els.map(w => w.dataset.id);
+    }
+  }
+
+  if (!ids.length && floatbar?.getBlockUnderCaret){
+    const b = floatbar.getBlockUnderCaret();
+    if (b) ids = [b.id];
+  }
+
+  if (!ids.length){
+    /* Если каретка вне блока — работаем с последним выделенным */
+    if (St().selectedId) ids = [St().selectedId];
+  }
+
+  if (!ids.length) return;
+
+  const before = state.snapshot();
+
+  /* Если останется меньше одного блока — очищаем содержимое */
+  if (blocks.length - ids.length < 1){
+    const keep = blocks.find(b => !ids.includes(b.id)) || blocks[0];
+    blocks.length = 0;
+    if (keep){
+      keep.content = "";
+      keep.type = "text";
+      keep.checked = false;
+      keep.rows = null;
+      keep.cols = null;
+      keep.lines = [ U.line("") ];
+      blocks.push(keep);
+    } else {
+      blocks.push(U.block("text", ""));
+    }
+    state.setActive(blocks[0].id);
+    state.setSelectedBlock(blocks[0].id);
+  } else {
+    const firstIdx = blocks.findIndex(b => ids.includes(b.id));
+    const remaining = blocks.filter(b => !ids.includes(b.id));
+    blocks.length = 0;
+    blocks.push(...remaining);
+
+    const nextId = remaining[Math.min(firstIdx, remaining.length - 1)]?.id || null;
+    state.setActive(nextId);
+    state.setSelectedBlock(nextId);
+  }
+
+  state.commit(before);
+  window.App.render.render();
+  setTimeout(() => window.App.render.focusActive(), 0);
+}
+
+/* ---------- Диспетчер ---------- */
 
 function dispatch(actionId, ev){
   const S = () => window.App.state;
@@ -161,7 +257,7 @@ function dispatch(actionId, ev){
   switch (actionId){
     /* Документы */
     case "doc:new":        sidebar?.createNewDocument(); return;
-    case "doc:template":   sidebar?.openTemplatePicker(); return;
+    case "doc:template":   sidebar?.openTemplatePicker?.(); return;
     case "doc:open":       menus?.openPalette("docs"); return;
 
     case "doc:save":
@@ -169,14 +265,19 @@ function dispatch(actionId, ev){
       U.toast("Сохранено");
       return;
 
-    case "doc:saveAs":
-      S().createDocument({}).then(doc => {
-        S().setActiveDoc(doc.id);
-        sidebar?.render();
-        tabs?.render();
-        U.toast("Создан новый документ");
+    case "doc:saveAs": {
+      const doc = S().getActiveDoc();
+      if (!doc) return;
+      S().duplicateDocument(doc.id).then(copy => {
+        if (copy){
+          S().setActiveDoc(copy.id);
+          sidebar?.render();
+          tabs?.render();
+          U.toast("Создан дубликат");
+        }
       });
       return;
+    }
 
     case "doc:close": {
       const id = S().S.activeDocId;
@@ -206,6 +307,7 @@ function dispatch(actionId, ev){
     case "doc:trash": {
       const doc = S().getActiveDoc();
       if (!doc) return;
+      if (!confirm(`В корзину: «${doc.title || "Без названия"}»?`)) return;
       S().trashDocument(doc.id).then(() => {
         sidebar?.render();
         tabs?.render();
@@ -241,81 +343,53 @@ function dispatch(actionId, ev){
       return;
 
     /* Редактирование */
-    case "edit:undo":
-      if (ev && ev.shiftKey) S().redo();
-      else                   S().undo();
-      return;
+    case "edit:undo": S().undo(); return;
+    case "edit:redo": S().redo(); return;
 
-    case "edit:redo":
-      S().redo();
-      return;
-
-    /* Панель строк (Ctrl+F) */
     case "lines:panel": {
-      if (menus?.openLinesPanel){
-        menus.openLinesPanel();
-      }
+      if (menus?.openLinesPanel) menus.openLinesPanel();
       return;
     }
 
-    /* Замок */
     case "lock:now":
       window.App.lock?.lock?.();
       return;
 
-    /* Удаление блока */
-    case "block:delete": {
-      const ev2 = new KeyboardEvent("keydown", {
-        key: "Backspace",
-        ctrlKey: true,
-        metaKey: true,
-        bubbles: true,
-        cancelable: true
-      });
-      (document.activeElement || document.body).dispatchEvent(ev2);
+    /* [Пакет 10] реальное удаление блока */
+    case "block:delete":
+      _doBlockDelete();
       return;
-    }
 
-    /* Новый блок (Ctrl+Enter). В .line — не срабатывает, там keyLine. */
     case "block:new": {
       const ae = document.activeElement;
-      if (ae?.closest?.(".line")) return; // уже сделал keyLine
-
-      if (menus?.run){
-        menus.run("block:new");
-      } else {
-        const state = S();
-        const blocks = state.getBlocks ? state.getBlocks() : state.S.blocks;
-        const blockEl = ae?.closest?.(".block");
-        let idx = blocks.length;
-        if (blockEl){
-          const found = blocks.findIndex(b => b.id === blockEl.dataset.id);
-          if (found >= 0) idx = found + 1;
-        }
-        window.App.render.add("text", idx);
+      if (ae?.closest?.(".line")) return;
+      if (!(ae?.isContentEditable && ae.closest?.("#editor"))) return;
+      const state = S();
+      const blocks = state.getBlocks();
+      const blockEl = ae.closest(".block");
+      let idx = blocks.length;
+      if (blockEl){
+        const found = blocks.findIndex(b => b.id === blockEl.dataset.id);
+        if (found >= 0) idx = found + 1;
       }
+      window.App.render.add("text", idx);
       return;
     }
 
-    /* Новая строка (Ctrl+Shift+Enter).
-       Работает, только если активна .line. */
     case "line:new": {
       const ae = document.activeElement;
       const lineEl = ae?.closest?.(".line");
-      if (!lineEl) return; // не в строке — нечего делать
+      if (!lineEl) return;
 
       const blockEl = lineEl.closest(".block");
       if (!blockEl) return;
 
       const state = S();
-      const blocks = state.getBlocks ? state.getBlocks() : state.S.blocks;
+      const blocks = state.getBlocks();
       const b = blocks.find(x => x.id === blockEl.dataset.id);
-      if (!b) return;
-
-      if (!U.LINE_TYPES || !U.LINE_TYPES.has(b.type)) return;
+      if (!b || !U.LINE_TYPES.has(b.type)) return;
 
       const lineIdx = parseInt(lineEl.dataset.lineIndex, 10) || 0;
-
       const old = state.snapshot();
       const newLn = U.line("");
       if (!Array.isArray(b.lines)) b.lines = [];
@@ -324,7 +398,6 @@ function dispatch(actionId, ev){
       state.commit(old);
       window.App.render.render();
 
-      /* Фокус на новую строку */
       setTimeout(() => {
         const el2 = document.querySelector(
           `#editor .block[data-id="${b.id}"] .line[data-line-id="${newLn.id}"]`
@@ -354,22 +427,44 @@ function inField(){
   return false;
 }
 
+function _activeBlockForPopover(){
+  try {
+    const ae = document.activeElement;
+    const lineEl = ae?.closest?.(".line");
+    if (!lineEl) return null;
+    const blockEl = lineEl.closest(".block");
+    if (!blockEl) return null;
+    return window.App.state.getBlocks().find(b => b.id === blockEl.dataset.id) || null;
+  } catch(e){
+    return null;
+  }
+}
+
 function onKeydown(e){
-  /* ПАТЧ 2.3.2: если render.js уже обработал — не дублируем */
   if (e.defaultPrevented) return;
 
-  /* Если settings.js сейчас захватывает комбинацию — не реагируем */
+  /* [Пакет 3] под замком игнорируем всё, кроме самого замка */
+  if (window.App.lock?.isLocked?.()) return;
+
+  /* [Пакет 10] IME / авто-повтор */
+  if (!e.key || e.isComposing || e.repeat) return;
+
   if (window.App.settings?.isCapturing?.()) return;
 
-  /* mod+Backspace обрабатывается в menus.js */
+  /* mod+Backspace — обрабатывается в menus/bind и render/line */
   if ((e.ctrlKey || e.metaKey) && e.key === "Backspace") return;
 
-  /* Поповер [[ перехватывает клавиши раньше */
   if (window.App.wikilinkPopover?.isOpen?.()){
-    if (window.App.wikilinkPopover.handleKey(e, null, null)) return;
+    const b = _activeBlockForPopover();
+    if (b){
+      const ae = document.activeElement;
+      if (window.App.wikilinkPopover.handleKey(e, b, ae)) return;
+    }
   }
 
   const combo = normalizeEvent(e);
+  if (!combo) return;
+
   const reg = getRegistry();
 
   let actionId = null;
@@ -378,18 +473,13 @@ function onKeydown(e){
   }
   if (!actionId) return;
 
-  /* ============================================================
-     ПАТЧ 2.3.2: block:new и line:new.
-     block:new — только если активен НЕ .line (иначе keyLine).
-     line:new — только если активна .line.
-     ============================================================ */
   const ae = document.activeElement;
   const inLine = !!ae?.closest?.(".line");
   const inEditor = !!(ae?.isContentEditable && ae.closest?.("#editor"));
 
   if (actionId === "block:new"){
-    if (inLine) return;          /* обрабатывает keyLine */
-    if (!inEditor) return;       /* вне редактора не создаём */
+    if (inLine) return;
+    if (!inEditor) return;
     e.preventDefault();
     e.stopPropagation();
     dispatch(actionId, e);
@@ -397,18 +487,16 @@ function onKeydown(e){
   }
 
   if (actionId === "line:new"){
-    if (!inLine) return;         /* не в строке — нечего делать */
+    if (!inLine) return;
     e.preventDefault();
     e.stopPropagation();
     dispatch(actionId, e);
     return;
   }
 
-  /* Некоторые действия не должны срабатывать в поле ввода */
   const skipInField = new Set(["doc:trash"]);
   if (skipInField.has(actionId) && inField()) return;
 
-  /* lines:panel — работает всегда */
   if (actionId === "lines:panel"){
     e.preventDefault();
     e.stopPropagation();
@@ -416,7 +504,6 @@ function onKeydown(e){
     return;
   }
 
-  /* Если фокус в поле и нет модификатора и это не функциональная клавиша */
   const hasMod = e.ctrlKey || e.metaKey || e.altKey;
   const isFn = /^F\d+$/.test(e.key) || e.key === "Delete" || e.key === "Escape";
   if (inField() && !hasMod && !isFn) return;
@@ -427,11 +514,8 @@ function onKeydown(e){
 }
 
 function bind(){
-  window.addEventListener("keydown", onKeydown, true);   // самый ранний уровень
-  document.addEventListener("keydown", onKeydown, true); // на всякий случай
+  window.addEventListener("keydown", onKeydown, true);
 }
-
-/* ---------- Публичный API ---------- */
 
 return {
   DEFAULTS,

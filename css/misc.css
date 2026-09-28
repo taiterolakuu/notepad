@@ -1,0 +1,299 @@
+/* ============================================================
+   misc.css — add-block-zone, block-gap, адаптив, print
+
+   [Пакет 15] :focus-visible для + блок и + между блоками;
+              @media print — единый блок.
+   ============================================================ */
+
+/* ---------- Outline выделения ---------- */
+
+.block.in-selection{
+  background:transparent;
+  outline:1.5px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset:-2px;
+  border-radius:7px;
+  transition:outline-color .12s, outline-offset .12s;
+}
+.block.in-selection:hover{
+  outline-color:color-mix(in srgb, var(--accent) 75%, transparent);
+}
+
+.block.selected{
+  background:transparent;
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+  border-radius:7px;
+  box-shadow:none;
+}
+
+.block.selected.in-selection{
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+
+[data-theme=dark] .block.in-selection{
+  outline-color:color-mix(in srgb, var(--accent) 65%, transparent);
+}
+[data-theme=dark] .block.selected{
+  outline-color:var(--accent);
+}
+
+/* ---------- «+ блок» под последним ---------- */
+
+.add-block-zone{
+  height:38px;
+  margin:6px 0 4px 27px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:0 10px;
+  border-radius:8px;
+  border:1px dashed transparent;
+  color:var(--muted);
+  font-size:13px;
+  cursor:pointer;
+  opacity:.35;
+  transition:opacity .14s, border-color .14s, background .14s, color .14s;
+  user-select:none;
+}
+.add-block-zone:hover{
+  opacity:1;
+  border-color:var(--line);
+  background:color-mix(in srgb, var(--accent2) 40%, transparent);
+  color:var(--text);
+}
+.add-block-zone:focus-visible{
+  opacity:1;
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-color:var(--line);
+}
+.add-block-zone .ab-plus{
+  width:20px;
+  height:20px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:5px;
+  background:color-mix(in srgb, var(--accent) 15%, transparent);
+  color:var(--accent);
+  flex:0 0 auto;
+  transition:background .12s, transform .12s;
+}
+.add-block-zone:hover .ab-plus{
+  background:color-mix(in srgb, var(--accent) 28%, transparent);
+  transform:scale(1.05);
+}
+.add-block-zone .ab-plus .lucide{
+  width:14px;
+  height:14px;
+  stroke-width:2.2;
+}
+
+/* ---------- Notion-style «+» между блоками ---------- */
+
+.block-gap{
+  position:relative;
+  height:6px;
+  margin:0;
+  pointer-events:none;
+}
+.block-gap::before{
+  content:"";
+  position:absolute;
+  left:0; right:0; top:50%;
+  height:2px;
+  background:transparent;
+  transition:background .12s;
+}
+.block-gap.hot::before{
+  background:color-mix(in srgb, var(--accent) 45%, transparent);
+}
+.block-gap .gap-plus{
+  position:absolute;
+  left:-24px;
+  top:50%;
+  transform:translateY(-50%) scale(.8);
+  width:20px;
+  height:20px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:5px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  color:var(--accent);
+  opacity:0;
+  pointer-events:auto;
+  cursor:pointer;
+  transition:opacity .12s, transform .12s, background .12s, border-color .12s;
+}
+.block-gap .gap-plus .lucide{
+  width:12px;
+  height:12px;
+  stroke-width:2.5;
+}
+.block-gap.hot .gap-plus,
+.block-gap .gap-plus:hover,
+.block-gap .gap-plus:focus-visible{
+  opacity:1;
+  transform:translateY(-50%) scale(1);
+}
+.block-gap .gap-plus:hover{
+  background:var(--accent2);
+  border-color:var(--accent);
+}
+.block-gap .gap-plus:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+
+/* ============================================================
+   Адаптив
+   ============================================================ */
+
+@media(min-width:1600px){
+  .page{ width:min(1200px, 78vw); }
+}
+@media(min-width:2000px){
+  .page{ width:min(1440px, 76vw); }
+}
+
+@media (max-width:900px){
+  .sidebar{
+    position:fixed;
+    top:0; bottom:0; left:0;
+    z-index:60;
+    width:280px;
+    box-shadow:0 12px 40px #0006;
+    transform:translateX(-100%);
+    opacity:1;
+    transition:transform .22s cubic-bezier(.16,1,.3,1);
+  }
+  .sidebar:not(.collapsed){
+    transform:translateX(0);
+  }
+  .sidebar.collapsed{
+    width:280px;
+    opacity:1;
+    transform:translateX(-100%);
+    pointer-events:none;
+  }
+}
+
+@media (max-width:700px){
+  .page{
+    padding:35px 22px;
+    width:calc(100% - 14px);
+    margin:18px auto;
+  }
+  .cols{grid-template-columns:1fr !important}
+  header{padding:0 9px}
+  .search{max-width:none}
+  .logo{display:none}
+  .floatbar{
+    max-width:calc(100vw - 20px);
+    overflow-x:auto;
+  }
+  .fontmenu{
+    width:calc(100vw - 24px);
+    max-width:260px;
+  }
+  .handlemenu{
+    width:calc(100vw - 24px);
+    max-width:300px;
+  }
+  .backlinks{ margin-top:32px; }
+  .bl-bar{ font-size:12px; padding:6px 10px; }
+
+  .wikilink-popover{ width:220px; }
+
+  .lines-panel{
+    width:calc(100vw - 20px);
+    top:8%;
+  }
+  .lsp-item{
+    grid-template-columns:18px 1fr auto auto;
+  }
+  .lsp-item .lsp-id{
+    display:none;
+  }
+
+  .settings-box{
+    width:calc(100vw - 20px);
+    height:calc(100vh - 40px);
+  }
+  .settings-body{ flex-direction:column; }
+  .settings-nav{
+    flex:0 0 auto;
+    flex-direction:row;
+    overflow-x:auto;
+    overflow-y:hidden;
+    border-right:0;
+    border-bottom:1px solid var(--line);
+    padding:8px;
+  }
+  .settings-nav-btn{ white-space:nowrap; }
+
+  .template-picker{
+    width:calc(100vw - 20px);
+    padding:12px;
+  }
+  .template-picker-body{
+    grid-template-columns:1fr;
+    grid-template-rows:minmax(140px, auto) 1fr;
+  }
+  .tpl-list{
+    border-right:0;
+    border-bottom:1px solid var(--line);
+    padding-right:0;
+    padding-bottom:6px;
+    max-height:180px;
+  }
+  .tpl-preview{
+    max-height:280px;
+  }
+}
+
+/* ============================================================
+   Print — единый блок, не разносить
+   ============================================================ */
+
+@media print{
+  header,
+  #sidebar,
+  #tabs,
+  #backlinks,
+  .handle,
+  .floatbar,
+  .palette,
+  .slash,
+  .fontmenu,
+  .handlemenu,
+  .markermenu,
+  .lines-panel,
+  .tablebar,
+  .add-block-zone,
+  .block-gap,
+  .cols-toolbar,
+  .col-resizer,
+  .settings-modal,
+  .lock-screen,
+  .backdrop,
+  .toast{display:none!important}
+
+  body,main{background:#fff;overflow:visible}
+
+  .page{
+    box-shadow:none;
+    border:0;
+    width:100%;
+    margin:0;
+    padding:0;
+  }
+
+  .block{break-inside:avoid}
+
+  .line{white-space:pre-wrap}
+  .col{break-inside:avoid}
+}

@@ -1,0 +1,161 @@
+/* ============================================================
+   base.css — reset, layout, шапка, page, title
+
+   [Пакет 15] :focus-visible, prefers-reduced-motion,
+              scrollbar-color для Firefox.
+   ============================================================ */
+
+*{box-sizing:border-box}
+
+html,body{
+  margin:0;
+  height:100%;
+  font:15px/1.6 var(--font-current);
+  color:var(--text);
+  background:var(--bg);
+}
+
+button,input,textarea{font:inherit;color:inherit}
+button{border:0;background:none;cursor:pointer}
+
+/* ---------- [Пакет 15] Глобальная доступность ---------- */
+
+/* Убираем outline только там, где он реально мешает —
+   но возвращаем для клавиатурного фокуса */
+:focus{outline:0}
+
+:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:4px;
+}
+
+/* Отключаем всю анимацию для prefers-reduced-motion */
+@media (prefers-reduced-motion: reduce){
+  *,
+  *::before,
+  *::after{
+    animation-duration:.001ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.001ms !important;
+    scroll-behavior:auto !important;
+  }
+}
+
+#app{flex:1;display:flex;flex-direction:column;min-width:0}
+
+.lucide{
+  fill:none;
+  stroke:currentColor;
+  stroke-width:2;
+  stroke-linecap:round;
+  stroke-linejoin:round;
+  display:block;
+  pointer-events:none;
+}
+
+/* ---------- Header ---------- */
+
+header{
+  height:58px;
+  display:flex;
+  align-items:center;
+  gap:10px;
+  padding:0 18px;
+  border-bottom:1px solid var(--line);
+  background:color-mix(in srgb,var(--paper) 92%,transparent);
+  position:sticky;
+  top:0;
+  z-index:20;
+}
+
+.logo{font-weight:750;letter-spacing:-.03em;margin-right:8px}
+.logo span{color:var(--accent)}
+
+.iconbtn{
+  width:34px;
+  height:34px;
+  border-radius:9px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+.iconbtn:hover{background:var(--accent2)}
+
+.search{flex:1;max-width:420px;margin:auto;position:relative}
+.search input{
+  width:100%;
+  height:34px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:var(--bg);
+  padding:0 12px;
+  outline:0;
+}
+.search input:focus{border-color:var(--accent)}
+.search input:focus-visible{
+  box-shadow:0 0 0 var(--focus-ring-width,3px) var(--focus-ring);
+}
+
+#status{
+  font-size:12px;
+  color:var(--muted);
+  min-width:80px;
+  text-align:right;
+}
+
+/* ---------- Page ---------- */
+
+main{flex:1;overflow:auto}
+
+.page{
+  width:clamp(720px, 78vw, 1400px);
+  max-width:calc(100% - 36px);
+  margin:38px auto 100px;
+  background:var(--paper);
+  box-shadow:var(--shadow);
+  border:1px solid var(--line);
+  border-radius:var(--radius);
+  padding:58px 70px;
+  min-height:calc(100vh - 140px);
+}
+
+.title{
+  font-family:var(--font-heading-current);
+  font-size:34px;
+  font-weight:760;
+  letter-spacing:-.04em;
+  outline:0;
+  margin:0 0 30px;
+}
+.title:empty:before{content:"Без названия";color:var(--muted)}
+
+.editor{min-height:300px}
+
+/* ---------- Scrollbar ---------- */
+
+main::-webkit-scrollbar,
+#editor::-webkit-scrollbar{width:10px}
+
+main::-webkit-scrollbar-thumb,
+#editor::-webkit-scrollbar-thumb{
+  background:color-mix(in srgb,var(--muted) 40%,transparent);
+  border-radius:6px;
+}
+
+main::-webkit-scrollbar-track,
+#editor::-webkit-scrollbar-track{background:transparent}
+
+/* [Пакет 15] Firefox */
+main,
+#editor{
+  scrollbar-color: color-mix(in srgb, var(--muted) 40%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+/* ---------- Индикатор сохранения ---------- */
+
+#status[data-state="dirty"]{ color:var(--muted); }
+#status[data-state="unsaved"]{ color:#c98a3c; }
+#status[data-state="saved"]{ color:var(--accent); }
+#status[data-state="error"]{ color:#c46a63; }

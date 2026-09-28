@@ -1,0 +1,221 @@
+/* ============================================================
+   blocks.css — .block, .handle, .body, типографика, table, swatches
+
+   [Пакет 15] :focus-visible для contenteditable,
+              не убиваем outline без альтернативы.
+   ============================================================ */
+
+/* ---------- Block ---------- */
+
+.block{
+  position:relative;
+  display:flex;
+  align-items:flex-start;
+  margin:3px 0;
+  border-radius:7px;
+  transition:background .12s;
+}
+.block:hover{background:color-mix(in srgb,var(--accent2) 32%,transparent)}
+.block.dragging{opacity:.4}
+
+.block.selected{
+  background:color-mix(in srgb,var(--accent2) 55%,transparent);
+  box-shadow:inset 0 0 0 1px var(--accent);
+}
+.block.selected .handle{opacity:.9}
+
+.block.in-selection{
+  background:color-mix(in srgb,var(--accent2) 28%,transparent);
+}
+.block.in-selection:hover{
+  background:color-mix(in srgb,var(--accent2) 40%,transparent);
+}
+.block.selected.in-selection{
+  background:color-mix(in srgb,var(--accent2) 55%,transparent);
+}
+
+/* ---------- Фоны блоков ---------- */
+
+.block[data-bg=soft]{background:#dce8e2}
+.block[data-bg=warm]{background:#f3e4a6}
+.block[data-bg=rose]{background:#f3d9d9}
+.block[data-bg=sky]{background:#d6e3f3}
+.block[data-bg=lilac]{background:#e2dbf3}
+.block[data-bg=mint]{background:#cdeadd}
+.block[data-bg=sand]{background:#eee0ce}
+
+[data-theme=dark] .block[data-bg=soft]{background:#33443d}
+[data-theme=dark] .block[data-bg=warm]{background:#625b35}
+[data-theme=dark] .block[data-bg=rose]{background:#4b3236}
+[data-theme=dark] .block[data-bg=sky]{background:#334455}
+[data-theme=dark] .block[data-bg=lilac]{background:#413a52}
+[data-theme=dark] .block[data-bg=mint]{background:#2f4a40}
+[data-theme=dark] .block[data-bg=sand]{background:#4a4033}
+
+/* ---------- Шрифты блоков ---------- */
+
+.block[data-font=sans] .body{font-family:var(--font-body)}
+.block[data-font=serif] .body{font-family:var(--font-serif)}
+.block[data-font=mono] .body{font-family:var(--font-mono-current)}
+
+/* ---------- Отступы ---------- */
+
+.block[data-indent="1"]{margin-left:24px}
+.block[data-indent="2"]{margin-left:48px}
+.block[data-indent="3"]{margin-left:72px}
+
+/* ---------- Body ---------- */
+
+.body{
+  flex:1;
+  min-width:0;
+  outline:0;
+  padding:4px 5px;
+  white-space:pre-wrap;
+  word-break:break-word;
+  max-width:130ch;
+}
+
+/* [Пакет 15] фокус на contenteditable — через box-shadow,
+   чтобы не дёргать layout */
+.body:focus-visible,
+.body:focus{
+  outline:0;
+}
+.body:focus-visible{
+  box-shadow:0 0 0 2px var(--focus-ring);
+  border-radius:6px;
+}
+
+.block[data-type="table"] .body,
+.block[data-type="columns"] .body,
+.block[data-type="image"] .body,
+.code{
+  max-width:none;
+}
+
+.block[data-align=center] .body,
+.block[data-align=right]  .body{
+  max-width:none;
+}
+.block[data-align=center] .body{text-align:center}
+.block[data-align=right]  .body{text-align:right}
+
+.body:empty:before{
+  content:attr(data-placeholder);
+  color:#aaa;
+  pointer-events:none;
+}
+
+.indent-tab{
+  display:inline-block;
+  width:24px;
+  height:1em;
+  vertical-align:baseline;
+}
+
+/* ---------- Handle ---------- */
+
+.handle{
+  width:27px;
+  padding-top:6px;
+  display:inline-flex;
+  align-items:flex-start;
+  justify-content:center;
+  color:var(--muted);
+  cursor:grab;
+  user-select:none;
+  opacity:0;
+  transition:opacity .12s;
+}
+.handle:active{cursor:grabbing}
+.block:hover .handle{opacity:.7}
+.block.selected .handle{opacity:.9}
+
+/* ---------- Типографика ---------- */
+
+h1.body,h2.body,h3.body{
+  font-family:var(--font-heading-current);
+  white-space:normal;
+  font-weight:750;
+  letter-spacing:-.025em;
+}
+h1.body{font-size:28px}
+h2.body{font-size:23px}
+h3.body{font-size:19px}
+
+.quote{
+  font-family:var(--font-serif);
+  font-style:italic;
+  border-left:3px solid var(--accent);
+  padding-left:14px!important;
+  color:var(--muted);
+}
+
+.code{
+  font-family:var(--font-mono-current);
+  font-size:13px;
+  line-height:1.6;
+  background:var(--bg);
+  border:1px solid var(--line);
+  border-radius:8px;
+  padding:12px;
+  white-space:pre;
+  overflow:auto;
+}
+
+.divider{height:16px;border-top:1px solid var(--line);margin-top:12px}
+
+/* ---------- Ссылки и mark ---------- */
+
+.body a{color:var(--accent);text-decoration:underline}
+.body mark{background:var(--mark);border-radius:3px;padding:0 2px}
+
+/* ---------- Image ---------- */
+
+img.noteimg{
+  max-width:min(100%,700px);
+  max-height:600px;
+  border-radius:9px;
+  border:1px solid var(--line);
+  display:block;
+}
+.caption{font-size:12px;color:var(--muted)}
+
+/* ---------- Table ---------- */
+
+table{width:100%;border-collapse:collapse;margin:5px 0}
+
+td,th{
+  font-family:var(--font-mono-current);
+  font-size:13.5px;
+  border:1px solid var(--line);
+  padding:7px 9px;
+  text-align:left;
+  min-width:90px;
+  outline:0;
+}
+td:focus-visible,
+th:focus-visible{
+  box-shadow:inset 0 0 0 2px var(--focus-ring);
+}
+th{
+  background:var(--accent2);
+  font-weight:700;
+}
+
+.tablebar{
+  display:none;
+  gap:4px;
+  margin-top:4px;
+}
+.block.selected .tablebar{display:flex}
+
+.tablebar button{
+  font-size:12px;
+  color:var(--muted);
+  padding:2px 7px;
+  border:1px solid var(--line);
+  border-radius:6px;
+}
+.tablebar button:hover{background:var(--accent2)}

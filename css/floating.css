@@ -1,0 +1,520 @@
+/* ============================================================
+   floating.css — floatbar, palette, slash, fontmenu, handlemenu,
+                   markermenu, backdrop, toast, wikilink-popover
+
+   [Пакет 15] .toast z-index 1000 — выше модалок и lock-screen.
+   ============================================================ */
+
+.floatbar,
+.palette,
+.slash,
+.fontmenu,
+.handlemenu,
+.markermenu{
+  position:fixed;
+  z-index:100;
+  background:var(--paper);
+  border:1px solid var(--line);
+  box-shadow:0 12px 40px #0002;
+  border-radius:11px;
+}
+
+/* ---------- Floatbar ---------- */
+
+.floatbar{
+  display:none;
+  padding:5px;
+  gap:2px;
+  align-items:center;
+}
+
+.floatbar button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:30px;
+  height:30px;
+  padding:0;
+  border-radius:7px;
+  color:var(--text);
+  transition:background .12s, color .12s;
+}
+.floatbar button:hover{background:var(--accent2)}
+.floatbar button:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.floatbar button.on{
+  background:var(--accent2);
+  color:var(--accent);
+}
+
+.fb-sep{
+  display:block;
+  width:1px;
+  height:18px;
+  margin:0 4px;
+  background:var(--line);
+}
+
+/* ---------- Marker menu ---------- */
+
+.markermenu{
+  z-index:115;
+  display:none;
+  padding:5px;
+  gap:2px;
+}
+.markermenu button{
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  width:30px;
+  height:30px;
+  padding:0;
+  border-radius:7px;
+  background:transparent;
+  color:var(--marker-color);
+  font-size:15px;
+  cursor:pointer;
+  transition:background .12s;
+}
+.markermenu button:hover{background:var(--accent2)}
+.markermenu button:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.markermenu button.on{
+  background:var(--accent2);
+  color:var(--accent);
+  box-shadow:inset 0 0 0 1px var(--accent);
+}
+.markermenu button[data-marker="none"]{
+  color:var(--muted);
+  font-size:13px;
+}
+.markermenu button[data-marker="none"]:hover{
+  color:var(--text);
+}
+
+/* ---------- Palette ---------- */
+
+.palette{
+  width:min(560px,calc(100% - 30px));
+  left:50%;
+  top:14%;
+  transform:translateX(-50%);
+  display:none;
+  overflow:hidden;
+}
+
+.palette input,
+.slash input,
+.fontmenu input{
+  width:100%;
+  border:0;
+  outline:0;
+  background:transparent;
+  color:var(--text);
+}
+
+.palette input,
+.slash input{
+  border-bottom:1px solid var(--line);
+  padding:13px;
+}
+
+.results{
+  max-height:360px;
+  overflow:auto;
+  padding:5px;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.result{
+  padding:9px 11px;
+  border-radius:7px;
+  display:flex;
+  gap:12px;
+  cursor:pointer;
+}
+.result.sel,
+.result:hover{background:var(--accent2)}
+.result:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+.result small{color:var(--muted);margin-left:auto}
+
+.slash{width:300px;display:none;overflow:hidden}
+.slash .results{max-height:260px}
+
+/* ---------- Font menu ---------- */
+
+.fontmenu{
+  z-index:110;
+  width:230px;
+  overflow:hidden;
+  display:none;
+}
+
+.fontmenu-search{
+  border-bottom:1px solid var(--line);
+  padding:0;
+}
+
+.fontmenu-search input{
+  padding:9px 12px;
+  font-size:13px;
+}
+
+.fontmenu-list{
+  max-height:320px;
+  overflow-y:auto;
+  padding:4px;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.fontmenu-item{
+  padding:7px 10px;
+  border-radius:6px;
+  font-size:13.5px;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  line-height:1.35;
+}
+.fontmenu-item:hover{background:var(--accent2)}
+.fontmenu-item:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+
+.fontmenu-item .fname{
+  flex:1;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.fontmenu-item .ftag{
+  font-size:11px;
+  color:var(--muted);
+  font-family:var(--font-mono-current);
+  flex-shrink:0;
+}
+
+.fontmenu-group{
+  padding:8px 10px 4px;
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  color:var(--muted);
+  user-select:none;
+}
+
+/* ---------- Handle menu ---------- */
+
+.handlemenu{
+  z-index:110;
+  display:none;
+  width:280px;
+  padding:8px;
+  font-size:13px;
+  max-height:calc(100vh - 24px);
+  overflow-y:auto;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.hm-section{
+  padding:6px 4px 8px;
+  border-bottom:1px solid var(--line);
+}
+.hm-section:last-of-type{border-bottom:0}
+
+.hm-label{
+  font-size:10.5px;
+  text-transform:uppercase;
+  letter-spacing:.08em;
+  color:var(--muted);
+  padding:0 2px 6px;
+  user-select:none;
+}
+
+.hm-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:4px;
+}
+
+.hm-row button{
+  padding:4px 8px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:transparent;
+  color:var(--text);
+  font-size:12px;
+  cursor:pointer;
+  transition:background .12s, border-color .12s;
+}
+.hm-row button:hover{background:var(--accent2)}
+.hm-row button:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.hm-row button.on{
+  background:var(--accent2);
+  border-color:var(--accent);
+  color:var(--accent);
+}
+
+.hm-marker-grid{
+  display:grid;
+  grid-template-columns:repeat(7, 1fr);
+  gap:4px;
+  padding:2px;
+}
+.hm-marker-grid button{
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  height:30px;
+  padding:0;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:transparent;
+  color:var(--marker-color);
+  font-size:14px;
+  cursor:pointer;
+  transition:background .12s, border-color .12s;
+}
+.hm-marker-grid button:hover{background:var(--accent2)}
+.hm-marker-grid button:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.hm-marker-grid button.on{
+  border-color:var(--accent);
+  background:var(--accent2);
+}
+.hm-marker-grid button[data-val=""]{
+  color:var(--muted);
+  font-size:12px;
+}
+
+.hm-actions{
+  display:flex;
+  gap:4px;
+  padding:8px 4px 2px;
+}
+.hm-actions button{
+  flex:1;
+  padding:6px 10px;
+  border:1px solid var(--line);
+  border-radius:6px;
+  background:transparent;
+  cursor:pointer;
+  font-size:12.5px;
+}
+.hm-actions button:hover{background:var(--accent2)}
+.hm-actions button:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.hm-actions button.danger{
+  color:#b3524a;
+  border-color:#e0bfbc;
+}
+.hm-actions button.danger:hover{background:#f6e2e0}
+
+/* ---------- Свотчи фона ---------- */
+
+.hm-bg-grid{
+  display:grid;
+  grid-template-columns:repeat(4, 1fr);
+  gap:6px;
+  padding:4px 2px;
+}
+.hm-bg-card{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  gap:6px;
+  padding:8px 4px 6px;
+  border:1px solid var(--line);
+  border-radius:9px;
+  background:color-mix(in srgb,var(--paper) 60%,transparent);
+  cursor:pointer;
+  transition:all .16s cubic-bezier(.16,1,.3,1);
+  outline:none;
+}
+.hm-bg-card:hover{
+  background:var(--accent2);
+  border-color:color-mix(in srgb,var(--accent) 40%,transparent);
+  transform:translateY(-1px);
+}
+.hm-bg-card:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:1px;
+}
+.hm-bg-circle{
+  width:18px;
+  height:18px;
+  border-radius:50%;
+  background-color:var(--sw, transparent);
+  border:1px solid rgba(0,0,0,.08);
+  box-shadow:inset 0 1px 2px rgba(0,0,0,.06);
+  position:relative;
+  transition:transform .16s ease;
+}
+.hm-swatch-none .hm-bg-circle{
+  border-color:var(--line);
+  background:repeating-linear-gradient(
+    45deg,transparent,transparent 3px,var(--line) 3px,var(--line) 4px);
+}
+.hm-bg-name{
+  font-size:11px;
+  font-weight:500;
+  color:var(--muted);
+  line-height:1;
+  letter-spacing:-.01em;
+  transition:color .16s ease;
+}
+.hm-bg-card:hover .hm-bg-name{color:var(--text)}
+.hm-bg-card.on{
+  background:var(--accent2);
+  border-color:var(--accent);
+  box-shadow:0 0 0 1px var(--accent);
+}
+.hm-bg-card.on .hm-bg-name{
+  color:var(--accent);
+  font-weight:600;
+}
+.hm-bg-card.on .hm-bg-circle{
+  transform:scale(1.1);
+  box-shadow:0 2px 6px color-mix(in srgb,var(--accent) 30%,transparent);
+}
+[data-theme=dark] .hm-bg-circle{
+  border-color:rgba(255,255,255,.12);
+}
+
+/* ---------- Backdrop ---------- */
+
+.backdrop{
+  position:fixed;
+  inset:0;
+  background:#0002;
+  z-index:90;
+  display:none;
+}
+
+/* ---------- Toast ---------- */
+
+.toast{
+  position:fixed;
+  bottom:22px;
+  left:50%;
+  transform:translateX(-50%);
+  background:var(--text);
+  color:var(--paper);
+  padding:8px 14px;
+  border-radius:8px;
+  font-size:13px;
+  opacity:0;
+  pointer-events:none;
+  transition:.18s;
+  /* [Пакет 15] выше модалок (500) и lock-screen (900) */
+  z-index:1000;
+}
+.toast.show{opacity:1}
+
+/* ---------- Wikilink popover ---------- */
+
+.wikilink-popover{
+  position:fixed;
+  z-index:180;
+  display:none;
+  width:260px;
+  max-height:280px;
+  overflow-y:auto;
+  padding:4px;
+  background:var(--paper);
+  border:1px solid var(--line);
+  border-radius:10px;
+  box-shadow:0 12px 40px #0003;
+  font-size:13px;
+  scrollbar-color: color-mix(in srgb, var(--muted) 30%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.wikilink-popover::-webkit-scrollbar{width:8px}
+.wikilink-popover::-webkit-scrollbar-thumb{
+  background:color-mix(in srgb, var(--muted) 30%, transparent);
+  border-radius:4px;
+}
+
+.wlp-item{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:6px 10px;
+  border-radius:7px;
+  cursor:pointer;
+  color:var(--text);
+  user-select:none;
+  transition:background .1s;
+}
+.wlp-item:hover{
+  background:color-mix(in srgb, var(--accent2) 60%, transparent);
+}
+.wlp-item:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:-2px;
+}
+.wlp-item.sel{
+  background:var(--accent2);
+  color:var(--accent);
+}
+
+.wlp-icon{
+  flex:0 0 auto;
+  width:18px;
+  text-align:center;
+  font-size:14px;
+}
+
+.wlp-title{
+  flex:1;
+  min-width:0;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.wlp-item.wlp-create .wlp-icon{
+  color:var(--accent);
+  font-weight:700;
+}
+.wlp-item.wlp-create .wlp-title{
+  color:var(--accent);
+}
+
+.wlp-empty{
+  padding:10px 12px;
+  color:var(--muted);
+  font-size:12.5px;
+  text-align:center;
+}
+
+/* ---------- Общий класс для floating ---------- */
+
+.is-floating{
+  position:fixed;
+  z-index:100;
+}

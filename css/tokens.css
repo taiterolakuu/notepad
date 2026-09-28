@@ -1,0 +1,135 @@
+/* ============================================================
+   tokens.css — CSS-переменные: темы и шрифты
+
+   [Пакет 15] prefers-color-scheme: dark — фолбэк,
+              когда [data-theme] ещё не выставлен.
+   ============================================================ */
+
+/* ---------- Тема ---------- */
+
+:root{
+  --bg:#f3efe7;
+  --paper:#fffdf8;
+  --text:#343330;
+  --muted:#858178;
+  --line:#ddd7cc;
+  --accent:#829b91;
+  --accent2:#dce8e2;
+  --mark:#f3e4a6;
+  --marker-color:var(--accent);
+  --shadow:0 8px 30px #40382a10;
+  --radius:12px;
+
+  --check-size:18px;
+  --check-bg:var(--paper);
+  --check-border:var(--line);
+  --check-border-hover:color-mix(in srgb,var(--accent) 55%,var(--line));
+  --check-fill:var(--accent);
+  --check-mark:#fff;
+  --check-ring:color-mix(in srgb,var(--accent) 35%,transparent);
+  --check-radius:5px;
+
+  /* [Пакет 15] единый фокусный ring */
+  --focus-ring:color-mix(in srgb,var(--accent) 45%,transparent);
+  --focus-ring-width:3px;
+}
+
+[data-theme=sepia]{
+  --bg:#e9dfcf;
+  --paper:#fff8e9;
+  --text:#493f33;
+  --muted:#8d7b67;
+  --line:#ddcdb7;
+  --accent:#a78663;
+  --accent2:#eee0ce;
+  --mark:#f2dda3;
+  --marker-color:#a78663;
+
+  --check-fill:#a78663;
+  --check-mark:#fffaf0;
+}
+
+[data-theme=mint]{
+  --bg:#e8efea;
+  --paper:#fbfffc;
+  --text:#303a35;
+  --muted:#7b8981;
+  --line:#d3dfd8;
+  --accent:#70998a;
+  --accent2:#dcebe4;
+  --mark:#e7edb0;
+  --marker-color:#70998a;
+
+  --check-fill:#70998a;
+  --check-mark:#f6fffb;
+}
+
+[data-theme=dark]{
+  --bg:#202320;
+  --paper:#292c29;
+  --text:#e6e4dc;
+  --muted:#989b94;
+  --line:#414640;
+  --accent:#91b5a5;
+  --accent2:#33443d;
+  --mark:#625b35;
+  --marker-color:#91b5a5;
+  --shadow:0 8px 30px #0006;
+
+  --check-bg:#2f342f;
+  --check-border:#525a52;
+  --check-border-hover:#7e9488;
+  --check-fill:#91b5a5;
+  --check-mark:#1e221f;
+  --check-ring:color-mix(in srgb,#91b5a5 40%,transparent);
+}
+
+/* ---------- [Пакет 15] Фолбэк: системная тёмная тема ---------- */
+/* Работает только пока JS не выставил [data-theme]. Как только
+   атрибут появляется (даже "paper"), правила ниже перестают
+   применяться — потому что :root:not([data-theme]) уже false. */
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme]){
+    --bg:#202320;
+    --paper:#292c29;
+    --text:#e6e4dc;
+    --muted:#989b94;
+    --line:#414640;
+    --accent:#91b5a5;
+    --accent2:#33443d;
+    --mark:#625b35;
+    --marker-color:#91b5a5;
+    --shadow:0 8px 30px #0006;
+
+    --check-bg:#2f342f;
+    --check-border:#525a52;
+    --check-border-hover:#7e9488;
+    --check-fill:#91b5a5;
+    --check-mark:#1e221f;
+    --check-ring:color-mix(in srgb,#91b5a5 40%,transparent);
+  }
+}
+
+/* ---------- Шрифты ---------- */
+
+:root{
+  --font-body:    'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-body-2:  'Open Sans', system-ui, sans-serif;
+  --font-body-3:  'Plus Jakarta Sans', system-ui, sans-serif;
+
+  --font-heading:   'Montserrat', system-ui, sans-serif;
+  --font-heading-2: 'Manrope', system-ui, sans-serif;
+  --font-heading-3: 'Outfit', system-ui, sans-serif;
+  --font-heading-4: 'Inter', system-ui, sans-serif;
+
+  --font-serif:   'Lora', Georgia, 'Times New Roman', serif;
+  --font-serif-2: 'PT Serif', Georgia, serif;
+  --font-serif-3: 'Merriweather', Georgia, serif;
+
+  --font-mono:   'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
+  --font-mono-2: 'Fira Code', ui-monospace, Consolas, monospace;
+
+  --font-current:         var(--font-body);
+  --font-heading-current: var(--font-heading);
+  --font-mono-current:    var(--font-mono);
+}

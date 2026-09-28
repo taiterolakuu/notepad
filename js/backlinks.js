@@ -1,6 +1,12 @@
 /* ============================================================
    backlinks.js — панель под документом:
                   «Ссылаются отсюда» + «Возможно, вы имели в виду»
+
+   [Пакет 6]  linkifyMention — \p{L}\p{N}+u, замена через функцию,
+              только DOM-узлы (не HTML-строка), .catch на save.
+   [Пакет 13] findUnlinkedMentions — через state (кэш);
+              панель не дублирует рендер.
+
    Зависит от: utils, state, render
    ============================================================ */
 
@@ -10,7 +16,7 @@ window.App.backlinks = (() => {
 "use strict";
 
 const U = window.App.utils;
-const { $, $$, el, escape, toast, LINE_TYPES } = U;
+const { $, el, escape, toast, LINE_TYPES } = U;
 
 const St = () => window.App.state.S;
 const getActiveDoc = () => window.App.state.getActiveDoc();
@@ -61,9 +67,9 @@ function render(){
   host.style.display = "block";
   host.innerHTML = "";
 
-  /* Компактная плашка */
   const bar = el("button", "bl-bar");
   bar.type = "button";
+  bar.setAttribute("aria-expanded", isExpanded() ? "true" : "false");
 
   const arrow = el("span", "bl-arrow");
   arrow.textContent = isExpanded() ? "▾" : "▸";
@@ -95,7 +101,6 @@ function render(){
       items: backlinks.map(b => ({
         doc: b.doc,
         snippet: b.snippet,
-        /* ПАТЧ 2.3.1: анкор как "block#line#fragment" */
         anchor: b.anchor || "",
         action: "open"
       }))
@@ -143,7 +148,6 @@ function renderGroup({ title, icon, items }){
     t.textContent = it.doc.title || "Без названия";
     name.append(t);
 
-    /* ПАТЧ 2.3.1: анкор с тройной адресацией — показываем как есть */
     if (it.anchor){
       const a = el("span", "bl-item-anchor");
       a.textContent = "#" + it.anchor;
@@ -154,14 +158,12 @@ function renderGroup({ title, icon, items }){
       const docId = it.doc.id;
       const anchorStr = it.anchor || "";
 
-      /* ПАТЧ 2.3.1: разбираем анкор и передаём в scrollToAnchorPath */
       Promise.resolve(window.App.state.setActiveDoc(docId)).then(() => {
         if (anchorStr){
           const { blockAnchor, lineAnchor, fragmentAnchor } = parseAnchorTriple(anchorStr);
           if (window.App.state.scrollToAnchorPath){
             window.App.state.scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor);
           } else if (window.App.state.scrollToAnchor){
-            /* fallback */
             window.App.state.scrollToAnchor(docId, anchorStr);
           }
         }
@@ -195,8 +197,69 @@ function renderGroup({ title, icon, items }){
 }
 
 /* ============================================================
-   ПАТЧ 2.3.1: linkifyMention — с поддержкой строк
+   [Пакет 6] linkifyMention — через DOM, не HTML-строку
    ============================================================ */
+
+/* Проходит по текстовым узлам внутри html-строки и заменяет
+   первое совпадение name на [[name]]. Возвращает { html, changed }. */
+function _linkifyInHtml(html, needle){
+  if (!html || !needle) return { html, changed: false };
+
+  /* Проверяем, нет ли уже ссылки с этим именем */
+  const existing = U.extractWikilinks(html);
+  if (existing.some(l => (l.name || "").trim().toLowerCase() === needle.toLowerCase())){
+    return { html, changed: false };
+  }
+
+  /* Границы слова для кириллицы */
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let re;
+  try {
+    re = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "u");
+  } catch(e){
+    re = new RegExp(`\\b${escaped}\\b`);
+  }
+
+  /* Парсим в <template> — XSS безопасно */
+  const frag = U.parseHTMLFragment(html);
+  let changed = false;
+
+  const walk = node => {
+    if (changed) return;
+    const children = [...node.childNodes];
+    for (const child of children){
+      if (changed) return;
+      if (child.nodeType === Node.TEXT_NODE){
+        const text = child.textContent;
+        const m = re.exec(text);
+        if (m){
+          const idx = m.index;
+          const before = text.slice(0, idx);
+          const after  = text.slice(idx + m[0].length);
+          const linkNode = document.createTextNode(`[[${needle}]]`);
+          const frag2 = document.createDocumentFragment();
+          if (before) frag2.appendChild(document.createTextNode(before));
+          frag2.appendChild(linkNode);
+          if (after) frag2.appendChild(document.createTextNode(after));
+          child.replaceWith(frag2);
+          changed = true;
+        }
+      } else if (child.nodeType === Node.ELEMENT_NODE){
+        const tag = child.tagName.toLowerCase();
+        /* Внутрь ссылок и кода не лезем */
+        if (tag === "a" || tag === "code" || tag === "pre") continue;
+        walk(child);
+      }
+    }
+  };
+  walk(frag);
+
+  if (!changed) return { html, changed: false };
+
+  const div = document.createElement("div");
+  div.append(frag);
+  return { html: div.innerHTML, changed: true };
+}
 
 function linkifyMention(sourceId, targetName){
   const src = St().documents[sourceId];
@@ -206,29 +269,20 @@ function linkifyMention(sourceId, targetName){
   const needle = targetName.trim();
   if (!needle) return;
 
-  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`\\b${escaped}\\b`);
-
   let changed = false;
-
-  const alreadyLinkedIn = (html) => {
-    const links = U.extractWikilinks(html);
-    return links.some(l =>
-      (l.name || "").trim().toLowerCase() === needle.toLowerCase()
-    );
-  };
+  let touchedBlock = null;
 
   for (const b of src.blocks || []){
     if (b.type === "code") continue;
 
-    /* --- ПАТЧ 2.3.1: строки --- */
+    /* Строки */
     if (Array.isArray(b.lines) && b.lines.length){
       for (const ln of b.lines){
-        if (typeof ln.text === "string" && re.test(ln.text)){
-          if (alreadyLinkedIn(ln.text)) continue;
-          ln.text = ln.text.replace(re, `[[${needle}]]`);
-          /* Обновляем и content для обратной совместимости */
+        const res = _linkifyInHtml(ln.text || "", needle);
+        if (res.changed){
+          ln.text = res.html;
           b.content = b.lines.map(l => l.text).join("<br>");
+          touchedBlock = b;
           changed = true;
           break;
         }
@@ -236,58 +290,68 @@ function linkifyMention(sourceId, targetName){
       if (changed) break;
     }
 
-    /* --- content --- */
-    if (typeof b.content === "string" && re.test(b.content)){
-      if (alreadyLinkedIn(b.content)) continue;
-      b.content = b.content.replace(re, `[[${needle}]]`);
-      changed = true;
-      break;
-    }
-
-    /* --- table --- */
-    if (b.type === "table" && Array.isArray(b.rows)){
-      for (const row of b.rows){
-        for (let i = 0; i < row.length; i++){
-          if (typeof row[i] === "string" && re.test(row[i])){
-            if (alreadyLinkedIn(row[i])) continue;
-            row[i] = row[i].replace(re, `[[${needle}]]`);
-            changed = true;
-            break;
-          }
-        }
-        if (changed) break;
+    /* Обычный content */
+    if (!changed && typeof b.content === "string"){
+      const res = _linkifyInHtml(b.content, needle);
+      if (res.changed){
+        b.content = res.html;
+        touchedBlock = b;
+        changed = true;
+        break;
       }
     }
-    if (changed) break;
 
-    /* --- columns --- */
-    if (b.type === "columns" && Array.isArray(b.content)){
+    /* Таблица */
+    if (!changed && b.type === "table" && Array.isArray(b.rows)){
+      outer:
+      for (const row of b.rows){
+        for (let i = 0; i < row.length; i++){
+          const res = _linkifyInHtml(row[i] || "", needle);
+          if (res.changed){
+            row[i] = res.html;
+            touchedBlock = b;
+            changed = true;
+            break outer;
+          }
+        }
+      }
+    }
+
+    /* Колонки */
+    if (!changed && b.type === "columns" && Array.isArray(b.content)){
       for (let i = 0; i < b.content.length; i++){
-        if (typeof b.content[i] === "string" && re.test(b.content[i])){
-          if (alreadyLinkedIn(b.content[i])) continue;
-          b.content[i] = b.content[i].replace(re, `[[${needle}]]`);
+        const res = _linkifyInHtml(b.content[i] || "", needle);
+        if (res.changed){
+          b.content[i] = res.html;
+          touchedBlock = b;
           changed = true;
           break;
         }
       }
     }
+
     if (changed) break;
   }
 
-  if (!changed){
+  if (!changed || !touchedBlock){
     toast("Не удалось найти упоминание");
     return;
   }
 
   src.updatedAt = Date.now();
-  window.App.db.saveDocument(src).then(() => {
-    window.App.state.rebuildBacklinks(src.id);
-    if (src.id === St().activeDocId){
-      window.App.render.render();
-    }
-    render();
-    toast("Ссылка создана");
-  });
+  window.App.db.saveDocument(src)
+    .then(() => {
+      window.App.state.rebuildBacklinks(src.id);
+      if (src.id === St().activeDocId){
+        window.App.render.render();
+      }
+      render();
+      toast("Ссылка создана");
+    })
+    .catch(err => {
+      console.error("linkify save error:", err);
+      toast("Не удалось сохранить");
+    });
 }
 
 /* ---------- Плюрализация ---------- */

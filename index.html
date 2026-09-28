@@ -5,13 +5,45 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Paper — Personal Notebook</title>
 
+<!-- [Пакет 5] CSP. style-src 'unsafe-inline' нужен, т.к. код массово
+     задаёт style="" через JS. img-src data: blob: для картинок из буфера.
+     connect-src 'none' — приложение не ходит в сеть само. -->
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'none';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+  font-src https://fonts.gstatic.com;
+  img-src 'self' data: blob:;
+  connect-src 'none';
+  object-src 'none';
+  base-uri 'none';
+  form-action 'self';
+">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&family=Open+Sans:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;700&family=Montserrat:wght@400;600;700&family=Manrope:wght@400;600;700&family=Outfit:wght@400;600;700&family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=PT+Serif:ital,wght@0,400;0,700;1,400&family=Merriweather:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;700&family=Fira+Code:wght@400;700&display=swap" rel="stylesheet">
 
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/base.css">
+<link rel="stylesheet" href="css/blocks.css">
+<link rel="stylesheet" href="css/lists.css">
+<link rel="stylesheet" href="css/columns.css">
+<link rel="stylesheet" href="css/lines.css">
+<link rel="stylesheet" href="css/floating.css">
+<link rel="stylesheet" href="css/sidebar.css">
+<link rel="stylesheet" href="css/wikilinks.css">
+<link rel="stylesheet" href="css/misc.css">
+
 </head>
 <body>
+
+<noscript>
+  <div style="padding:24px;font:15px system-ui,sans-serif;color:#343330;background:#f3efe7">
+    Paper — это локальное приложение для заметок. Оно требует JavaScript
+    для работы с IndexedDB и редактирования документов.
+  </div>
+</noscript>
 
 <div id="layout">
 
@@ -49,8 +81,8 @@
         </svg>
       </button>
 
-      <div class="search"><input id="find" placeholder="Поиск · Ctrl+F"></div>
-      <span id="status">Сохранено</span>
+      <div class="search"><input id="find" placeholder="Поиск по заголовкам" aria-label="Поиск"></div>
+      <span id="status" aria-live="polite">Сохранено</span>
 
       <button class="iconbtn" id="theme" title="Сменить тему" aria-label="Сменить тему">
         <svg class="lucide" viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
@@ -71,7 +103,7 @@
       </button>
     </header>
 
-    <div id="tabs" class="tabs"></div>
+    <div id="tabs" class="tabs" role="tablist"></div>
 
     <main>
       <section class="page">
@@ -230,7 +262,6 @@
     </div>
   </div>
 
-  <!-- ID блока -->
   <div class="hm-section" data-section="id">
     <div class="hm-label">ID блока</div>
     <div class="hm-id-row">
@@ -258,12 +289,9 @@
     </div>
   </div>
 
-  <!-- ПАТЧ 2.3.1: секция «Строки» блока -->
   <div class="hm-section" data-section="lines" hidden>
     <div class="hm-label">Строки блока</div>
-    <div class="hm-lines-list" data-group="lines-list">
-      <!-- заполняется динамически через fillLinesList() -->
-    </div>
+    <div class="hm-lines-list" data-group="lines-list"></div>
   </div>
 
   <div class="hm-section" data-section="marker" hidden>
@@ -279,7 +307,6 @@
     </div>
   </div>
 
-  <!-- ПАТЧ 2.1: секция «Колонки» -->
   <div class="hm-section" data-section="columns" hidden>
     <div class="hm-label">Колонки</div>
 
@@ -290,9 +317,7 @@
     </div>
 
     <div class="hm-label" style="padding-top:8px">Пропорции</div>
-    <div class="hm-row" data-group="cols-ratio">
-      <!-- заполняется динамически через fillColsRatioButtons() -->
-    </div>
+    <div class="hm-row" data-group="cols-ratio"></div>
 
     <div class="hm-label" style="padding-top:8px">Выравнивание</div>
     <div class="hm-row" data-group="cols-valign">
@@ -387,12 +412,11 @@
   <div class="results" id="slashresults"></div>
 </div>
 
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 <input id="file" type="file" accept="image/*" hidden>
 
 <div class="wikilink-popover" id="wikilink-popover" role="listbox" aria-label="Автодополнение ссылок"></div>
 
-<!-- ПАТЧ 2.3.1: панель строк блока (Ctrl+F) -->
 <div class="lines-panel" id="lines-panel" style="display:none;">
   <div class="lsp-head" id="lines-panel-head"></div>
   <div class="lsp-list" id="lines-panel-list"></div>
@@ -401,11 +425,13 @@
 
 <div class="settings-modal" id="settings-modal"></div>
 
-<div class="lock-screen" id="lock-screen" role="dialog" aria-label="Введите пароль">
+<!-- [Пакет 3] fail-closed: экран блокировки виден по умолчанию.
+     lock.js скроет его после успешной проверки meta.lock. -->
+<div class="lock-screen" id="lock-screen" style="display:flex" role="dialog" aria-modal="true" aria-label="Введите пароль">
   <div class="lock-box">
     <div class="lock-logo">Paper<span>·</span></div>
     <div class="lock-title">Введите пароль</div>
-    <form id="lock-form" autocomplete="off">
+    <div id="lock-form" autocomplete="off">
       <input
         id="lock-password"
         type="password"
@@ -415,25 +441,53 @@
         spellcheck="false"
       >
       <div class="lock-error" id="lock-error"></div>
-      <button type="submit" class="lock-btn">Разблокировать</button>
-    </form>
-    <div class="lock-hint">Пароль установлен в настройках приложения</div>
+      <button type="button" class="lock-btn" id="lock-btn">Разблокировать</button>
+    </div>
+    <div class="lock-hint" id="lock-hint">Введите пароль, чтобы открыть Paper</div>
   </div>
 </div>
 
 <script src="js/db.js"></script>
 <script src="js/utils.js"></script>
 <script src="js/state.js"></script>
+
+<!-- render/* -->
+<script src="js/render/_shared.js"></script>
+<script src="js/render/wikilinks.js"></script>
+<script src="js/render/paste.js"></script>
+<script src="js/render/line.js"></script>
+<script src="js/render/block.js"></script>
+<script src="js/render/main.js"></script>
 <script src="js/render.js"></script>
+
+<!-- sidebar/* -->
+<script src="js/sidebar/_shared.js"></script>
+<script src="js/sidebar/modals.js"></script>
+<script src="js/sidebar/folders.js"></script>
+<script src="js/sidebar/cards.js"></script>
+<script src="js/sidebar/list.js"></script>
+<script src="js/sidebar/main.js"></script>
 <script src="js/sidebar.js"></script>
+
 <script src="js/tabs.js"></script>
-<script src="js/menus.js"></script>
 <script src="js/io.js"></script>
 <script src="js/backlinks.js"></script>
 <script src="js/wikilink-popover.js"></script>
 <script src="js/hotkeys.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/lock.js"></script>
+
+<!-- menus/* -->
+<script src="js/menus/_shared.js"></script>
+<script src="js/menus/slash.js"></script>
+<script src="js/menus/palette.js"></script>
+<script src="js/menus/search.js"></script>
+<script src="js/menus/floatbar.js"></script>
+<script src="js/menus/handle-menu.js"></script>
+<script src="js/menus/lines-panel.js"></script>
+<script src="js/menus/bind.js"></script>
+<script src="js/menus.js"></script>
+
 <script src="js/main.js"></script>
 
 </body>

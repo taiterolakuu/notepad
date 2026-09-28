@@ -1,5 +1,10 @@
 /* ============================================================
    tabs.js — панель вкладок над редактором
+
+   [Пакет 14] openTabs фильтруется от мёртвых id; closeTab
+              по отфильтрованному списку; prev/next — i === -1 → 0.
+   [Пакет 15] role="tab", aria-selected; средняя кнопка закрывает.
+
    Зависит от: utils, state
    ============================================================ */
 
@@ -13,19 +18,36 @@ const { $, el } = U;
 
 const St = () => window.App.state.S;
 
+/* ---------- Отфильтрованный список ---------- */
+
+function _liveTabs(){
+  return (St().ui.openTabs || []).filter(id => {
+    const d = St().documents[id];
+    return d && !d.trashed;
+  });
+}
+
 /* ---------- Рендер ---------- */
 
 function render(){
   const bar = $("#tabs");
   if (!bar) return;
-  bar.innerHTML = "";
 
-  const ids = St().ui.openTabs.filter(id => St().documents[id] && !St().documents[id].trashed);
+  const ids = _liveTabs();
 
-  /* если активного нет в табах — добавим */
-  if (St().activeDocId && !ids.includes(St().activeDocId)){
+  /* Если активного нет в табах — добавим в конец */
+  if (St().activeDocId && St().documents[St().activeDocId] && !ids.includes(St().activeDocId)){
     ids.push(St().activeDocId);
+    /* Синхронизируем S.ui.openTabs, чтобы мёртвые id не копились */
+    St().ui.openTabs = ids;
+    window.App.state.setUI("openTabs", ids);
+  } else if (ids.length !== (St().ui.openTabs || []).length){
+    /* Мёртвые id отфильтровались — синхронизируем */
+    St().ui.openTabs = ids;
+    window.App.state.setUI("openTabs", ids);
   }
+
+  bar.innerHTML = "";
 
   if (!ids.length){
     bar.style.display = "none";
@@ -37,16 +59,23 @@ function render(){
     const doc = St().documents[id];
     if (!doc) return;
 
-    const tab = el("div", "tab" + (id === St().activeDocId ? " active" : ""));
+    const isActive = id === St().activeDocId;
+
+    const tab = el("div", "tab" + (isActive ? " active" : ""));
     tab.dataset.docId = id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+    tab.tabIndex = 0;
 
     const title = el("span", "tab-title");
     title.textContent = doc.title || "Без названия";
     tab.append(title);
 
     const close = el("button", "tab-close");
+    close.type = "button";
     close.textContent = "×";
-    close.title = "Закрыть вкладку (Ctrl+W)";
+    close.title = "Закрыть вкладку (Alt+W)";
+    close.setAttribute("aria-label", "Закрыть вкладку");
     close.onclick = e => {
       e.stopPropagation();
       closeTab(id);
@@ -55,51 +84,92 @@ function render(){
 
     tab.onclick = () => window.App.state.setActiveDoc(id);
 
+    /* [Пакет 15] средняя кнопка закрывает */
+    tab.addEventListener("auxclick", e => {
+      if (e.button === 1){
+        e.preventDefault();
+        closeTab(id);
+      }
+    });
+
+    /* Enter / Space — активировать */
+    tab.addEventListener("keydown", e => {
+      if (e.key === "Enter" || e.key === " "){
+        e.preventDefault();
+        window.App.state.setActiveDoc(id);
+      }
+    });
+
     bar.append(tab);
   });
 
-  /* прокрутка активного таба в видимую зону */
+  /* Прокрутка активного таба в видимую зону контейнера вкладок */
   const active = bar.querySelector(".tab.active");
   if (active){
-    active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    try {
+      active.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "instant" });
+    } catch(_){
+      active.scrollIntoView({ block: "nearest", inline: "nearest" });
+    }
   }
 }
 
+/* ---------- Закрытие ---------- */
+
 function closeTab(id){
-  const idx = St().ui.openTabs.indexOf(id);
+  /* Работаем с отфильтрованным списком, чтобы не считать мёртвые id */
+  const ids = _liveTabs();
+  const idx = ids.indexOf(id);
+
   if (idx >= 0){
-    St().ui.openTabs.splice(idx, 1);
-    window.App.state.setUI("openTabs", St().ui.openTabs);
+    ids.splice(idx, 1);
   }
 
-  /* если закрыли активный — переключаемся на соседний */
+  /* Сосед — по отфильтрованному списку, или активный документ */
+  let next = null;
   if (id === St().activeDocId){
-    const next = St().ui.openTabs[Math.max(0, idx - 1)] || St().ui.openTabs[0];
+    next = ids[Math.max(0, idx - 1)] || ids[0] || null;
+  }
+
+  /* Обновляем openTabs в state до переключения */
+  St().ui.openTabs = ids;
+  window.App.state.setUI("openTabs", ids);
+
+  if (id === St().activeDocId){
     if (next){
       window.App.state.setActiveDoc(next);
     } else {
-      /* все табы закрыты — показываем активный документ */
+      /* Все вкладки закрыты — оставляем активный документ как единственный */
       const fallback = Object.values(St().documents).find(d => !d.trashed);
-      if (fallback) window.App.state.setActiveDoc(fallback.id);
+      if (fallback){
+        window.App.state.setActiveDoc(fallback.id);
+      }
     }
   }
+
   render();
 }
 
 /* ---------- Следующий/предыдущий ---------- */
 
 function nextTab(){
-  const ids = St().ui.openTabs.filter(id => St().documents[id] && !St().documents[id].trashed);
+  const ids = _liveTabs();
   if (ids.length < 2) return;
-  const i = ids.indexOf(St().activeDocId);
+
+  let i = ids.indexOf(St().activeDocId);
+  if (i < 0) i = 0; /* [Пакет 14] активного нет в списке — стартуем с 0 */
+
   const j = (i + 1) % ids.length;
   window.App.state.setActiveDoc(ids[j]);
 }
 
 function prevTab(){
-  const ids = St().ui.openTabs.filter(id => St().documents[id] && !St().documents[id].trashed);
+  const ids = _liveTabs();
   if (ids.length < 2) return;
-  const i = ids.indexOf(St().activeDocId);
+
+  let i = ids.indexOf(St().activeDocId);
+  if (i < 0) i = 0; /* [Пакет 14] то же */
+
   const j = (i - 1 + ids.length) % ids.length;
   window.App.state.setActiveDoc(ids[j]);
 }

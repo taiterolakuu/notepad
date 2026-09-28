@@ -1,6 +1,21 @@
 /* ============================================================
    state.js — S, history, undo/redo, storage, selection
    Мультидокументная модель поверх IndexedDB.
+
+   [Пакет 2]  commit привязан к docId, flushPending, _imgStore.
+   [Пакет 6]  rebuildBacklinks при create/restore/duplicate;
+              renameDocument — escape newTitle, регистронезависимо.
+   [Пакет 9]  Object.create(null) для словарей; валидация id.
+   [Пакет 11] uiSnapshot; onTabClose/startupMode/autoRename;
+              undo темы (theme+fonts в снапшоте).
+   [Пакет 12] scrollToAnchorPath — CSS.escape, data-line-anchor;
+              convertBlockType.
+   [Пакет 13] lines — источник истины; snapshot через stripImages;
+              setActiveDoc сохраняет prev только если dirty;
+              кэш findUnlinkedMentions; persistent _imgStore.
+   [Пакет 14] trash/emptyTrash/autoCleanTrash чистят activeDocId,
+              openTabs, history.
+
    Зависит от: utils, db
    ============================================================ */
 
@@ -16,24 +31,62 @@ const {
   HISTORY_LIMIT, INPUT_DEBOUNCE, SAVE_DEBOUNCE, TRASH_TTL_DAYS,
   $, $$, uid, now, toast,
   normalizeDocument, normalizeFolder, normalizeTag, normalizeTemplate,
-  normalizeUI, normalizeSettings
+  normalizeUI, normalizeSettings,
+  LINE_TYPES, syncBlockLines
 } = U;
+
+/* ============================================================
+   [Пакет 9] Object.create(null) — защита от __proto__ атаки
+   ============================================================ */
+
+/* Валидация id: разрешаем только безопасные символы */
+function _isValidId(id){
+  return typeof id === "string"
+    && id.length >= 1
+    && id.length <= 128
+    && /^[a-zA-Z0-9\-_]+$/.test(id)
+    && id !== "__proto__"
+    && id !== "constructor"
+    && id !== "prototype";
+}
+
+/* Достаёт значение из безопасного словаря */
+function _safeGet(dict, key){
+  if (!_isValidId(key)) return undefined;
+  return Object.prototype.hasOwnProperty.call(dict, key) ? dict[key] : undefined;
+}
+
+/* Кладёт значение в безопасный словарь */
+function _safeSet(dict, key, value){
+  if (!_isValidId(key)) return false;
+  dict[key] = value;
+  return true;
+}
+
+/* Безопасное удаление */
+function _safeDel(dict, key){
+  if (!_isValidId(key)) return false;
+  if (!Object.prototype.hasOwnProperty.call(dict, key)) return false;
+  delete dict[key];
+  return true;
+}
 
 /* ---------- State ---------- */
 
+/* [Пакет 9] Все словари через Object.create(null) — нет цепочки прототипов */
 const S = {
-  documents: {},
-  folders: {},
-  tags: {},
-  templates: {},
-  backlinks: {},          /* targetId → [{fromId, snippet, anchor, at}, ...] */
+  documents: Object.create(null),
+  folders:   Object.create(null),
+  tags:      Object.create(null),
+  templates: Object.create(null),
+  backlinks: Object.create(null),
   ui:       normalizeUI(null),
   settings: normalizeSettings(null),
   activeDocId: null
 };
 
-const histories = {};
-const futures  = {};
+const histories = Object.create(null);
+const futures   = Object.create(null);
 
 let active       = null;
 let slashBlockId = null;
@@ -41,9 +94,19 @@ let draggedId    = null;
 
 /* Таймеры */
 let saveTimer    = null;
-let historyTimer = null;
 let backupTimer  = null;
 let unsavedTimer = null;
+
+/* [Пакет 2] отложенный commit привязан к документу */
+let _pendingBefore  = null;
+let _pendingDocId   = null;
+let _pendingTimer   = null;
+
+/* [Пакет 13] dirty-флаг по документу */
+const _dirtyDocs = new Set();
+
+/* [Пакет 13] Кэш findUnlinkedMentions: docId → { stamp, data } */
+const _mentionsCache = new Map();
 
 /* ---------- Индикатор сохранения ---------- */
 
@@ -55,7 +118,10 @@ function setStatus(text, state){
   else delete s.dataset.state;
 }
 
-function markDirty(){
+function markDirty(docId){
+  if (docId) _dirtyDocs.add(docId);
+  else if (S.activeDocId) _dirtyDocs.add(S.activeDocId);
+
   setStatus("Изменения…", "dirty");
   clearTimeout(unsavedTimer);
   unsavedTimer = setTimeout(() => {
@@ -66,7 +132,10 @@ function markDirty(){
   }, 2000);
 }
 
-function markSaved(){
+function markSaved(docId){
+  if (docId) _dirtyDocs.delete(docId);
+  else if (S.activeDocId) _dirtyDocs.delete(S.activeDocId);
+
   clearTimeout(unsavedTimer);
   setStatus("Сохранено", "saved");
 }
@@ -79,7 +148,7 @@ function markError(){
 /* ---------- Активный документ ---------- */
 
 function getActiveDoc(){
-  return S.activeDocId ? S.documents[S.activeDocId] : null;
+  return S.activeDocId ? _safeGet(S.documents, S.activeDocId) : null;
 }
 
 function getBlocks(){
@@ -135,12 +204,103 @@ function setActive(v){ active = v; }
 function setSlashBlockId(v){ slashBlockId = v; }
 function setDraggedId(v){ draggedId = v; }
 
-/* ---------- Snapshot / история ---------- */
+/* ============================================================
+   [Пакет 13] Snapshot / история — картинки не таскаем в историю.
+              _imgStore теперь persistent (DB.store "imgStore").
+   ============================================================ */
 
+const _imgStore = new Map();        /* dataUrl → id */
+const _imgStoreById = new Map();    /* id → dataUrl */
+let _imgStoreLoaded = false;
+
+async function _loadImgStore(){
+  if (_imgStoreLoaded) return;
+  _imgStoreLoaded = true;
+  try {
+    const rows = await DB.all("imgStore");
+    for (const row of rows || []){
+      if (row && typeof row.id === "string" && typeof row.dataUrl === "string"){
+        _imgStore.set(row.dataUrl, row.id);
+        _imgStoreById.set(row.id, row.dataUrl);
+      }
+    }
+  } catch(e){
+    console.warn("imgStore load error:", e);
+  }
+}
+
+function _imgRef(dataUrl){
+  let id = _imgStore.get(dataUrl);
+  if (!id){
+    id = "img_" + Math.random().toString(36).slice(2, 10);
+    _imgStore.set(dataUrl, id);
+    _imgStoreById.set(id, dataUrl);
+    /* persist — fire and forget */
+    DB.put("imgStore", { id, dataUrl }).catch(() => {});
+  }
+  return id;
+}
+
+function _imgByRef(id){
+  return _imgStoreById.get(id) || "";
+}
+
+function _stripImages(doc){
+  if (!doc) return doc;
+  const clone = { title: doc.title, blocks: [] };
+  for (const b of doc.blocks || []){
+    const nb = { ...b };
+    if (typeof nb.content === "string" && nb.content.startsWith("data:image/")){
+      nb.content = `#img-ref:${_imgRef(nb.content)}`;
+    }
+    if (Array.isArray(nb.lines)){
+      nb.lines = nb.lines.map(ln => {
+        if (typeof ln.text === "string" && ln.text.startsWith("data:image/")){
+          return { ...ln, text: `#img-ref:${_imgRef(ln.text)}` };
+        }
+        return ln;
+      });
+    }
+    clone.blocks.push(nb);
+  }
+  return clone;
+}
+
+function _restoreImages(restored){
+  if (!restored || !Array.isArray(restored.blocks)) return restored;
+
+  for (const b of restored.blocks){
+    if (typeof b.content === "string" && b.content.startsWith("#img-ref:")){
+      const id = b.content.slice(9);
+      b.content = _imgByRef(id);
+    }
+    if (Array.isArray(b.lines)){
+      b.lines = b.lines.map(ln => {
+        if (typeof ln.text === "string" && ln.text.startsWith("#img-ref:")){
+          const id = ln.text.slice(9);
+          return { ...ln, text: _imgByRef(id) };
+        }
+        return ln;
+      });
+    }
+  }
+  return restored;
+}
+
+/* [Пакет 11] snapshot включает theme и fonts */
 function snapshot(){
   const doc = getActiveDoc();
   if (!doc) return "{}";
-  return JSON.stringify({ title: doc.title, blocks: doc.blocks });
+  return JSON.stringify({
+    title: doc.title,
+    blocks: _stripImages(doc).blocks,
+    theme: S.ui.theme,
+    fonts: S.ui.fonts ? { ...S.ui.fonts } : {}
+  });
+}
+
+function snapshotForHistory(){
+  return snapshot();
 }
 
 function ensureHistory(docId){
@@ -148,71 +308,243 @@ function ensureHistory(docId){
   if (!futures[docId])   futures[docId]   = [];
 }
 
-function pushHistory(before){
+function _pushHistoryFor(docId, beforeRaw){
+  if (!histories[docId]) histories[docId] = [];
+  if (!futures[docId])   futures[docId]   = [];
+
+  const doc = _safeGet(S.documents, docId);
+  if (!doc) return;
+
+  const afterRaw = JSON.stringify({
+    title: doc.title,
+    blocks: _stripImages(doc).blocks,
+    theme: S.ui.theme,
+    fonts: S.ui.fonts ? { ...S.ui.fonts } : {}
+  });
+
+  if (beforeRaw === afterRaw) return;
+
+  const h = histories[docId];
+  h.push(beforeRaw);
+  if (h.length > HISTORY_LIMIT) h.shift();
+  futures[docId].length = 0;
+}
+
+function commit(before){
   const doc = getActiveDoc();
   if (!doc) return;
-  ensureHistory(doc.id);
-  const h = histories[doc.id];
-
-  const after = snapshot();
-  if (before === after) return;
-
-  h.push(before);
-  if (h.length > HISTORY_LIMIT) h.shift();
-  futures[doc.id].length = 0;
+  _pushHistoryFor(doc.id, before);
+  _pendingBefore = null;
+  _pendingDocId  = null;
+  clearTimeout(_pendingTimer);
   save();
 }
 
-function commit(before){ pushHistory(before); }
-
 function commitDebounced(before){
-  clearTimeout(historyTimer);
-  historyTimer = setTimeout(() => pushHistory(before), U.INPUT_DEBOUNCE);
+  const doc = getActiveDoc();
+  if (!doc) return;
+
+  if (_pendingDocId && _pendingDocId !== doc.id){
+    flushPending();
+  }
+
+  if (_pendingBefore === null){
+    _pendingBefore = before;
+    _pendingDocId  = doc.id;
+  }
+
+  clearTimeout(_pendingTimer);
+  _pendingTimer = setTimeout(flushPending, U.INPUT_DEBOUNCE);
 }
 
-/* ---------- Хранилище ---------- */
+function flushPending(){
+  clearTimeout(_pendingTimer);
+  _pendingTimer = null;
+
+  if (_pendingBefore === null || !_pendingDocId){
+    _pendingBefore = null;
+    _pendingDocId = null;
+    return;
+  }
+
+  const docId  = _pendingDocId;
+  const before = _pendingBefore;
+
+  _pendingBefore = null;
+  _pendingDocId = null;
+
+  _pushHistoryFor(docId, before);
+  save();
+}
+
+/* ============================================================
+   [Пакет 13] lines — источник истины, content — вычисляемое
+   ============================================================ */
+
+function _normalizeBlockSources(doc){
+  if (!doc) return;
+  for (const b of doc.blocks || []){
+    if (LINE_TYPES.has(b.type)){
+      if (!Array.isArray(b.lines) || !b.lines.length){
+        syncBlockLines(b);
+      }
+    }
+  }
+}
+
+/* ============================================================
+   [Пакет 12] Конвертер типов блоков
+   Меняет b.type, перенося содержимое:
+     - в LINE_TYPES:  b.lines[0].text ← текущий HTML
+     - в ul/ol:       HTML разбивается на <li> по строкам
+     - в table:       HTML остаётся текстом первой ячейки
+     - из ul/ol в text:  <li> разворачиваются в <br>-joined строки
+   ============================================================ */
+
+function convertBlockType(b, newType){
+  if (!b || !newType) return;
+  const oldType = b.type;
+  if (oldType === newType) return;
+
+  /* Собираем текущее HTML-содержимое блока */
+  let html = "";
+  if (LINE_TYPES.has(oldType)){
+    if (Array.isArray(b.lines) && b.lines.length){
+      html = b.lines.map(l => l.text || "").join("<br>");
+    } else {
+      html = typeof b.content === "string" ? b.content : "";
+    }
+  } else if (oldType === "ul" || oldType === "ol"){
+    html = typeof b.content === "string" ? b.content : "";
+  } else if (oldType === "table"){
+    if (Array.isArray(b.rows)){
+      html = b.rows.map(row => row.map(c => c || "").join(" ")).join("<br>");
+    }
+  } else if (oldType === "columns"){
+    if (Array.isArray(b.content)){
+      html = b.content.filter(Boolean).join("<br>");
+    }
+  } else {
+    html = typeof b.content === "string" ? b.content : "";
+  }
+
+  b.type = newType;
+
+  /* Заполняем поля нового типа */
+  if (LINE_TYPES.has(newType)){
+    b.lines = [ U.line(html) ];
+    b.content = html;
+    b.rows = null;
+    b.cols = null;
+    b.widths = null;
+    b.gap = null;
+  } else if (newType === "ul" || newType === "ol"){
+    /* Из HTML вытаскиваем список: <li>...</li> либо разбиваем по <br> */
+    const tmpl = document.createElement("div");
+    tmpl.innerHTML = html || "";
+    let lis = [...tmpl.querySelectorAll("li")];
+    if (!lis.length){
+      /* Нет <li> — делаем один <li> с содержимым */
+      lis = [];
+      const parts = (tmpl.innerHTML || "").split(/<br\s*\/?>/i);
+      for (const p of parts){
+        lis.push({ innerHTML: p });
+      }
+    }
+    b.content = lis.map(li => `<li>${li.innerHTML || "<br>"}</li>`).join("") || "<li><br></li>";
+    b.lines = [];
+    b.rows = null;
+    b.cols = null;
+    if (newType === "ul" && !b.marker) b.marker = "disc";
+  } else if (newType === "table"){
+    /* Простейшее: весь HTML в первую ячейку, остальные пустые */
+    const plain = U.htmlToText(html || "");
+    b.rows = [[plain, ""], ["", ""]];
+    b.content = "";
+    b.lines = [];
+  } else if (newType === "columns"){
+    const plain = html || "";
+    b.cols = b.cols || 2;
+    b.content = [plain, ""];
+    while (b.content.length < b.cols) b.content.push("");
+    b.widths = Array(b.cols).fill(1 / b.cols);
+    b.gap = 14;
+    b.valign = "top";
+    b.lines = [];
+    b.rows = null;
+  } else if (newType === "code"){
+    b.content = U.htmlToText(html || "");
+    b.lines = [];
+    b.rows = null;
+    b.cols = null;
+  } else {
+    /* text/h1/h2/h3/quote/divider/image — простые */
+    b.content = typeof html === "string" ? html : "";
+    b.lines = [];
+    b.rows = null;
+    b.cols = null;
+  }
+
+  /* Сброс полей, которые не применимы */
+  if (newType !== "divider" && newType !== "image"){
+    b.checked = false;
+  }
+}
+
+/* ============================================================
+   Хранилище
+   ============================================================ */
 
 async function load(){
   await DB.init();
+  await _loadImgStore();
 
   const docs = await DB.listDocuments();
-  S.documents = {};
+  S.documents = Object.create(null);
   for (const raw of docs){
     const doc = normalizeDocument(raw);
-    if (doc) S.documents[doc.id] = doc;
+    if (doc && _isValidId(doc.id)){
+      _normalizeBlockSources(doc);
+      _safeSet(S.documents, doc.id, doc);
+    }
   }
 
   const folders = await DB.all("folders");
-  S.folders = {};
+  S.folders = Object.create(null);
   for (const raw of folders){
     const f = normalizeFolder(raw);
-    if (f) S.folders[f.id] = f;
+    if (f && _isValidId(f.id)) _safeSet(S.folders, f.id, f);
   }
 
   const tags = await DB.all("tags");
-  S.tags = {};
+  S.tags = Object.create(null);
   for (const raw of tags){
     const t = normalizeTag(raw);
-    if (t) S.tags[t.id] = t;
+    if (t && _isValidId(t.id)) _safeSet(S.tags, t.id, t);
   }
 
-  /* шаблоны */
   const tpls = await DB.listTemplates();
-  S.templates = {};
+  S.templates = Object.create(null);
   for (const raw of tpls){
     const t = normalizeTemplate(raw);
-    if (t) S.templates[t.id] = t;
+    if (t && _isValidId(t.id)) _safeSet(S.templates, t.id, t);
   }
 
-  /* backlinks */
   const bl = await DB.getMeta("backlinks");
-  S.backlinks = (bl && typeof bl === "object") ? bl : {};
+  S.backlinks = Object.create(null);
+  if (bl && typeof bl === "object" && !Array.isArray(bl)){
+    for (const k of Object.keys(bl)){
+      if (_isValidId(k)) S.backlinks[k] = bl[k];
+    }
+  }
 
   S.ui       = normalizeUI(await DB.getMeta("ui"));
   S.settings = normalizeSettings(await DB.getMeta("settings"));
 
   const activeId = await DB.getMeta("activeDocId");
-  S.activeDocId  = (activeId && S.documents[activeId]) ? activeId : (Object.keys(S.documents)[0] || null);
+  S.activeDocId  = (_isValidId(activeId) && _safeGet(S.documents, activeId))
+    ? activeId
+    : (Object.keys(S.documents)[0] || null);
 
   if (!S.activeDocId){
     const doc = normalizeDocument({});
@@ -225,7 +557,6 @@ async function load(){
   S.ui.selectedId    = null;
   S.ui.selectedRange = null;
 
-  /* Пересобираем backlinks для всех документов после загрузки */
   try {
     for (const id of Object.keys(S.documents)){
       rebuildBacklinks(id);
@@ -235,14 +566,14 @@ async function load(){
   }
 }
 
-function saveNow(){
-  const doc = getActiveDoc();
+function saveNow(docId){
+  const id = docId || S.activeDocId;
+  const doc = _safeGet(S.documents, id);
   if (!doc) return;
 
-  /* ПАТЧ 2.3.1: синхронизируем строки со content перед сохранением */
   for (const b of doc.blocks || []){
-    if (U.LINE_TYPES && U.LINE_TYPES.has(b.type)){
-      U.syncBlockLines(b);
+    if (LINE_TYPES.has(b.type)){
+      syncBlockLines(b);
     }
   }
 
@@ -250,7 +581,7 @@ function saveNow(){
 
   DB.saveDocument(doc)
     .then(() => {
-      markSaved();
+      markSaved(doc.id);
       rebuildBacklinks(doc.id);
     })
     .catch(err => {
@@ -265,8 +596,8 @@ function saveNow(){
 
 function save(){
   clearTimeout(saveTimer);
-  markDirty();
-  saveTimer = setTimeout(saveNow, S.settings.saveDebounceMs || SAVE_DEBOUNCE);
+  markDirty(S.activeDocId);
+  saveTimer = setTimeout(() => saveNow(), S.settings.saveDebounceMs || SAVE_DEBOUNCE);
 }
 
 function uiSnapshot(){
@@ -281,13 +612,39 @@ function uiSnapshot(){
     theme:        S.ui.theme,
     fonts:        S.ui.fonts,
     history:      S.ui.history,
-    historyIndex: S.ui.historyIndex
+    historyIndex: S.ui.historyIndex,
+    showPreview:      S.ui.showPreview,
+    showDate:         S.ui.showDate,
+    hidePreview:      S.ui.hidePreview,
+    newDocFolder:     S.ui.newDocFolder,
+    onTabClose:       S.ui.onTabClose,
+    startupMode:      S.ui.startupMode,
+    autoRename:       S.ui.autoRename,
+    backlinksExpanded:S.ui.backlinksExpanded,
+    showHiddenTemplates: S.ui.showHiddenTemplates
   };
 }
 
-/* ---------- Undo / Redo ---------- */
+/* ============================================================
+   [Пакет 11] Undo/Redo — тема и шрифты тоже откатываются
+   ============================================================ */
+
+function _applyRestoredUI(restored){
+  if (!restored) return;
+  if (typeof restored.theme === "string"){
+    S.ui.theme = restored.theme;
+    document.documentElement.dataset.theme =
+      S.ui.theme === "paper" ? "" : S.ui.theme;
+  }
+  if (restored.fonts && typeof restored.fonts === "object"){
+    S.ui.fonts = { ...restored.fonts };
+    window.App.render?.applySavedFonts?.();
+  }
+}
 
 function undo(){
+  flushPending();
+
   const doc = getActiveDoc();
   if (!doc) return;
   ensureHistory(doc.id);
@@ -295,20 +652,25 @@ function undo(){
   if (!h.length) return;
 
   futures[doc.id].push(snapshot());
-  const restored = JSON.parse(h.pop());
+  const restored = _restoreImages(JSON.parse(h.pop()));
+
   doc.title  = restored.title  || "";
   doc.blocks = (restored.blocks || []).map(U.normalizeBlock).filter(Boolean);
   if (!doc.blocks.length) doc.blocks = [U.block("text", "")];
+  _normalizeBlockSources(doc);
+  _applyRestoredUI(restored);
 
   S.ui.selectedId = null;
   S.ui.selectedRange = null;
+  markDirty(doc.id);
 
   window.App.render.render();
-  window.App.render.applySavedFonts();
   save();
 }
 
 function redo(){
+  flushPending();
+
   const doc = getActiveDoc();
   if (!doc) return;
   ensureHistory(doc.id);
@@ -316,16 +678,19 @@ function redo(){
   if (!f.length) return;
 
   histories[doc.id].push(snapshot());
-  const restored = JSON.parse(f.pop());
+  const restored = _restoreImages(JSON.parse(f.pop()));
+
   doc.title  = restored.title  || "";
   doc.blocks = (restored.blocks || []).map(U.normalizeBlock).filter(Boolean);
   if (!doc.blocks.length) doc.blocks = [U.block("text", "")];
+  _normalizeBlockSources(doc);
+  _applyRestoredUI(restored);
 
   S.ui.selectedId = null;
   S.ui.selectedRange = null;
+  markDirty(doc.id);
 
   window.App.render.render();
-  window.App.render.applySavedFonts();
   save();
 }
 
@@ -395,22 +760,35 @@ async function createDocument(opts = {}){
     icon: opts.icon || "",
     color: opts.color || ""
   });
-  S.documents[doc.id] = doc;
+  if (!_isValidId(doc.id)){
+    console.error("[state] invalid doc id, regenerating:", doc.id);
+    doc.id = uid();
+  }
+  _safeSet(S.documents, doc.id, doc);
   await DB.saveDocument(doc);
+  try { rebuildBacklinks(doc.id); } catch(e){}
   return doc;
 }
 
 async function setActiveDoc(id){
-  if (!S.documents[id]) return;
+  if (!_safeGet(S.documents, id)) return;
   if (S.activeDocId === id) return;
+
+  flushPending();
 
   const prev = getActiveDoc();
   if (prev){
     for (const b of prev.blocks || []){
-      if (U.LINE_TYPES && U.LINE_TYPES.has(b.type)) U.syncBlockLines(b);
+      if (LINE_TYPES.has(b.type)) syncBlockLines(b);
     }
     U.recomputeDocStats(prev);
-    await DB.saveDocument(prev);
+
+    if (_dirtyDocs.has(prev.id)){
+      try {
+        await DB.saveDocument(prev);
+        markSaved(prev.id);
+      } catch(e){ console.warn("save prev error:", e); }
+    }
   }
 
   S.activeDocId = id;
@@ -423,6 +801,9 @@ async function setActiveDoc(id){
   await DB.setMeta("activeDocId", id);
   await DB.setMeta("ui", uiSnapshot());
 
+  /* [Пакет 11] авто-переименование из первой строки, если включено */
+  _maybeAutoRename(S.documents[id]);
+
   window.App.render.render();
   window.App.render.applySavedFonts();
   window.App.sidebar?.render();
@@ -430,26 +811,49 @@ async function setActiveDoc(id){
   window.App.backlinks?.render();
 }
 
-async function renameDocument(id, name){
-  const doc = S.documents[id];
+/* [Пакет 11] Автопереименование: если autoRename и пустой title — взять первую строку */
+function _maybeAutoRename(doc){
+  if (!doc) return;
+  if (S.ui.autoRename === false) return;
+  if ((doc.title || "").trim()) return;
+
+  let first = "";
+  for (const b of doc.blocks || []){
+    if (!LINE_TYPES.has(b.type) && b.type !== "ul" && b.type !== "ol") continue;
+    const txt = U.getBlockText(b).trim();
+    if (txt){ first = txt.split("\n")[0].trim(); break; }
+  }
+  if (!first) return;
+  if (first.length > 80) first = first.slice(0, 80);
+  doc.title = first;
+  DB.saveDocument(doc).catch(() => {});
+}
+
+async function renameDocument(id, name, prevTitle){
+  const doc = _safeGet(S.documents, id);
   if (!doc) return;
 
-  const oldTitle = (doc.title || "").trim();
+  const oldTitle = (prevTitle !== undefined
+    ? String(prevTitle == null ? "" : prevTitle)
+    : String(doc.title || "")
+  ).trim();
+
   const newTitle = String(name || "").slice(0, 200);
 
   doc.title = newTitle;
   doc.updatedAt = now();
+  markDirty(doc.id);
 
-  /* ПАТЧ 2.3.1: автопереименование с поддержкой тройной адресации */
-  if (oldTitle && oldTitle !== newTitle){
+  if (oldTitle && newTitle && oldTitle.toLowerCase() !== newTitle.toLowerCase()){
     const escapedOld = oldTitle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const reNoAnchor   = new RegExp(`\\[\\[\\s*${escapedOld}\\s*\\]\\]`, "g");
-    const reWithAnchor = new RegExp(`\\[\\[\\s*${escapedOld}\\s*#([^\\]]+)\\]\\]`, "g");
+    const reNoAnchor   = new RegExp(`\\[\\[\\s*${escapedOld}\\s*\\]\\]`, "gi");
+    const reWithAnchor = new RegExp(`\\[\\[\\s*${escapedOld}\\s*#([^\\]]+)\\]\\]`, "gi");
 
     const replaceIn = (html) => {
       if (typeof html !== "string") return html;
-      let out = html.replace(reWithAnchor, (_, anchor) => `[[${newTitle}#${anchor.trim()}]]`);
-      out = out.replace(reNoAnchor, `[[${newTitle}]]`);
+      let out = html.replace(reWithAnchor, (_, anchor) =>
+        `[[${newTitle}#${anchor.trim()}]]`);
+      out = out.replace(reNoAnchor, () => `[[${newTitle}]]`);
       return out;
     };
 
@@ -482,8 +886,6 @@ async function renameDocument(id, name){
             }
           }
         }
-
-        /* ПАТЧ 2.3.1: строки */
         if (Array.isArray(b.lines)){
           for (const ln of b.lines){
             if (typeof ln.text === "string"){
@@ -496,12 +898,14 @@ async function renameDocument(id, name){
 
       if (changed){
         other.updatedAt = now();
-        try { await DB.saveDocument(other); } catch(e){}
+        markDirty(other.id);
+        try { await DB.saveDocument(other); markSaved(other.id); } catch(e){}
       }
     }
   }
 
   await DB.saveDocument(doc);
+  markSaved(doc.id);
 
   const titleEl = $("#title");
   if (id === S.activeDocId && titleEl && document.activeElement !== titleEl){
@@ -521,25 +925,26 @@ async function renameDocument(id, name){
 }
 
 async function setDocumentField(id, key, value){
-  const doc = S.documents[id];
+  const doc = _safeGet(S.documents, id);
   if (!doc) return;
   doc[key] = value;
   doc.updatedAt = now();
+  markDirty(doc.id);
   await DB.saveDocument(doc);
+  markSaved(doc.id);
   window.App.sidebar?.render();
   window.App.tabs?.render();
 }
 
 async function duplicateDocument(id){
-  const src = S.documents[id];
+  const src = _safeGet(S.documents, id);
   if (!src) return null;
 
-  /* ПАТЧ 2.3.1: глубокая копия с регенерацией lineId и customId */
   const clone = JSON.parse(JSON.stringify(src));
 
-  /* Перегенерировать lineId (не оставлять те же) */
   if (Array.isArray(clone.blocks)){
     for (const b of clone.blocks){
+      if (b.customId) b.customId = "";
       if (Array.isArray(b.lines)){
         for (const ln of b.lines){
           ln.id = U.shortId();
@@ -564,29 +969,80 @@ async function duplicateDocument(id){
   copy.trashed = false;
   copy.trashedAt = null;
 
-  S.documents[copy.id] = copy;
+  _safeSet(S.documents, copy.id, copy);
   await DB.saveDocument(copy);
+  try { rebuildBacklinks(copy.id); } catch(e){}
   window.App.sidebar?.render();
   return copy;
 }
 
+/* ============================================================
+   [Пакет 14] Корзина и activeDocId
+   ============================================================ */
+
+function _cleanupDocFromMemory(id){
+  _safeDel(S.documents, id);
+  S.ui.openTabs = (S.ui.openTabs || []).filter(x => x !== id);
+  S.ui.history  = (S.ui.history || []).filter(x => x !== id);
+  if (S.ui.historyIndex >= S.ui.history.length) S.ui.historyIndex = S.ui.history.length - 1;
+  _dirtyDocs.delete(id);
+  _mentionsCache.delete(id);
+
+  delete S.backlinks[id];
+  for (const k of Object.keys(S.backlinks)){
+    S.backlinks[k] = S.backlinks[k].filter(x => x.fromId !== id);
+    if (!S.backlinks[k].length) delete S.backlinks[k];
+  }
+}
+
+async function _fallbackAfterRemoval(id){
+  if (id !== S.activeDocId) return;
+  const next = firstAvailableDoc();
+  if (next){
+    S.activeDocId = null;
+    await setActiveDoc(next.id);
+  } else {
+    const doc = await createDocument({});
+    S.activeDocId = null;
+    await setActiveDoc(doc.id);
+  }
+}
+
+/* [Пакет 11] onTabClose: "keep" | "archive" | "trash" */
+async function _applyOnTabClose(docId){
+  const mode = S.ui.onTabClose || "keep";
+  if (mode === "keep") return;
+  const doc = _safeGet(S.documents, docId);
+  if (!doc) return;
+  if (mode === "archive"){
+    doc.archived = true;
+    doc.updatedAt = now();
+    await DB.saveDocument(doc);
+  } else if (mode === "trash"){
+    await trashDocument(docId);
+  }
+}
+
 async function trashDocument(id){
-  const doc = S.documents[id];
+  const doc = _safeGet(S.documents, id);
   if (!doc) return;
   doc.trashed = true;
   doc.trashedAt = now();
   doc.updatedAt = now();
+  markDirty(doc.id);
   await DB.saveDocument(doc);
+  markSaved(doc.id);
 
   if (id === S.activeDocId){
-    const next = firstAvailableDoc();
-    if (next) await setActiveDoc(next.id);
+    S.activeDocId = null;
+    await _fallbackAfterRemoval(id);
   }
 
   for (const other of Object.values(S.documents)){
     try { rebuildBacklinks(other.id); } catch(e){}
   }
   DB.setMeta("backlinks", S.backlinks);
+  _mentionsCache.clear();
 
   window.App.sidebar?.render();
   window.App.tabs?.render();
@@ -594,37 +1050,37 @@ async function trashDocument(id){
 }
 
 async function restoreDocument(id){
-  const doc = S.documents[id];
+  const doc = _safeGet(S.documents, id);
   if (!doc) return;
   doc.trashed = false;
   doc.trashedAt = null;
   doc.updatedAt = now();
+  markDirty(doc.id);
   await DB.saveDocument(doc);
+  markSaved(doc.id);
+
+  try { rebuildBacklinks(id); } catch(e){}
+  for (const other of Object.values(S.documents)){
+    try { rebuildBacklinks(other.id); } catch(e){}
+  }
+  DB.setMeta("backlinks", S.backlinks);
+  _mentionsCache.clear();
+
   window.App.sidebar?.render();
+  window.App.tabs?.render();
   window.App.backlinks?.render();
 }
 
 async function purgeDocument(id){
-  delete S.documents[id];
-  S.ui.openTabs = S.ui.openTabs.filter(x => x !== id);
-
-  delete S.backlinks[id];
-  for (const k of Object.keys(S.backlinks)){
-    S.backlinks[k] = S.backlinks[k].filter(x => x.fromId !== id);
-    if (!S.backlinks[k].length) delete S.backlinks[k];
-  }
+  _cleanupDocFromMemory(id);
 
   await DB.deleteDocument(id);
   await DB.setMeta("backlinks", S.backlinks);
   await DB.setMeta("ui", uiSnapshot());
 
   if (id === S.activeDocId){
-    const next = firstAvailableDoc();
-    if (next) await setActiveDoc(next.id);
-    else {
-      const doc = await createDocument({});
-      await setActiveDoc(doc.id);
-    }
+    S.activeDocId = null;
+    await _fallbackAfterRemoval(id);
   }
   window.App.sidebar?.render();
   window.App.tabs?.render();
@@ -637,15 +1093,19 @@ async function emptyTrash(){
     .map(d => d.id);
   if (!ids.length) return 0;
 
-  ids.forEach(id => { delete S.documents[id]; delete S.backlinks[id]; });
-  for (const k of Object.keys(S.backlinks)){
-    S.backlinks[k] = S.backlinks[k].filter(x => !ids.includes(x.fromId));
-    if (!S.backlinks[k].length) delete S.backlinks[k];
-  }
+  for (const id of ids) _cleanupDocFromMemory(id);
 
   await DB.deleteDocuments(ids);
   await DB.setMeta("backlinks", S.backlinks);
+  await DB.setMeta("ui", uiSnapshot());
+
+  if (!S.activeDocId || !S.documents[S.activeDocId]){
+    S.activeDocId = null;
+    await _fallbackAfterRemoval(null);
+  }
+
   window.App.sidebar?.render();
+  window.App.tabs?.render();
   return ids.length;
 }
 
@@ -657,14 +1117,16 @@ async function autoCleanTrash(){
     .map(d => d.id);
   if (!ids.length) return 0;
 
-  ids.forEach(id => { delete S.documents[id]; delete S.backlinks[id]; });
-  for (const k of Object.keys(S.backlinks)){
-    S.backlinks[k] = S.backlinks[k].filter(x => !ids.includes(x.fromId));
-    if (!S.backlinks[k].length) delete S.backlinks[k];
-  }
+  for (const id of ids) _cleanupDocFromMemory(id);
 
   await DB.deleteDocuments(ids);
   await DB.setMeta("backlinks", S.backlinks);
+  await DB.setMeta("ui", uiSnapshot());
+
+  if (!S.activeDocId || !S.documents[S.activeDocId]){
+    S.activeDocId = null;
+    await _fallbackAfterRemoval(null);
+  }
   return ids.length;
 }
 
@@ -673,6 +1135,14 @@ function firstAvailableDoc(){
     .filter(d => !d.trashed)
     .sort((a, b) => b.updatedAt - a.updatedAt);
   return list[0] || null;
+}
+
+/* [Пакет 11] startupMode: "last" | "list" */
+function _applyStartupMode(){
+  const mode = S.ui.startupMode || "last";
+  if (mode === "list"){
+    S.ui.section = "all";
+  }
 }
 
 function listDocuments({ section = S.ui.section, folderId = undefined, query = "" } = {}){
@@ -746,7 +1216,6 @@ function resolveDocByName(name){
   return { doc: matches[0], count: matches.length };
 }
 
-/* ПАТЧ 2.3.1: возвращает [{name, blockAnchor, lineAnchor, fragmentAnchor}] */
 function extractWikilinksFromBlock(b){
   const out = [];
   if (!b || b.type === "code") return out;
@@ -766,7 +1235,6 @@ function extractWikilinksFromBlock(b){
       pushAll(col || "");
     }
   } else if (Array.isArray(b.lines) && b.lines.length){
-    /* ПАТЧ 2.3.1: строки */
     for (const ln of b.lines){
       pushAll(ln.text || "");
     }
@@ -776,31 +1244,26 @@ function extractWikilinksFromBlock(b){
   return out;
 }
 
-/* ПАТЧ 2.3.1: собираем анкор-строку для backlink */
 function anchorToString(blockAnchor, lineAnchor, fragmentAnchor){
   return [blockAnchor, lineAnchor, fragmentAnchor]
     .filter(Boolean)
     .join("#");
 }
 
-/* ПАТЧ 2.3.1: пересобирает backlinks с учётом тройной адресации */
 function rebuildBacklinks(docId){
-  const doc = S.documents[docId];
+  const doc = _safeGet(S.documents, docId);
   if (!doc) return;
 
-  /* 1. Убираем всё, что было от этого документа */
   for (const targetId of Object.keys(S.backlinks)){
     S.backlinks[targetId] = S.backlinks[targetId].filter(x => x.fromId !== docId);
     if (!S.backlinks[targetId].length) delete S.backlinks[targetId];
   }
 
-  /* 2. Собираем ссылки */
   const links = [];
   for (const b of doc.blocks || []){
     extractWikilinksFromBlock(b).forEach(l => links.push(l));
   }
 
-  /* 3. Резолвим в id и пишем */
   const snippet = (doc.title || "Без названия").slice(0, 80);
   const seen = new Set();
 
@@ -819,7 +1282,7 @@ function rebuildBacklinks(docId){
     S.backlinks[targetId].push({
       fromId:  docId,
       snippet: snippet,
-      anchor:  anchorStr,     /* "block#line#fragment" или "" */
+      anchor:  anchorStr,
       at:      now()
     });
   }
@@ -833,17 +1296,29 @@ function getBacklinks(docId){
     .sort((a, b) => (b.at || 0) - (a.at || 0));
 }
 
-/* ПАТЧ 2.3.1: findUnlinkedMentions — links теперь [{name, blockAnchor,...}] */
+/* [Пакет 13] findUnlinkedMentions — кэш по updatedAt */
 function findUnlinkedMentions(docId){
-  const doc = S.documents[docId];
+  const doc = _safeGet(S.documents, docId);
   if (!doc) return [];
 
   const name = (doc.title || "").trim();
   if (!name || name.length < 3) return [];
 
+  /* Кэш-хит */
+  const stamp = doc.updatedAt || 0;
+  const cached = _mentionsCache.get(docId);
+  if (cached && cached.stamp === stamp){
+    return cached.data;
+  }
+
   const needle = name.toLowerCase();
   const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const re = new RegExp(`\\b${escaped}\\b`, "g");
+  let re;
+  try {
+    re = new RegExp(`(?<![\\p{L}\\p{N}_])${escaped}(?![\\p{L}\\p{N}_])`, "gu");
+  } catch(e){
+    re = new RegExp(`\\b${escaped}\\b`, "g");
+  }
 
   const out = [];
   for (const other of Object.values(S.documents)){
@@ -876,23 +1351,27 @@ function findUnlinkedMentions(docId){
     }
     if (count > 0) out.push({ doc: other, count });
   }
+
+  _mentionsCache.set(docId, { stamp, data: out });
   return out;
 }
 
 /* ============================================================
-   ПАТЧ 2.3.1: scrollToAnchorPath — переход к блоку/строке/фрагменту
+   [Пакет 12] scrollToAnchorPath — CSS.escape + data-line-anchor
    ============================================================ */
 
-/* Прокручивает к блоку, строке или фрагменту в указанном документе.
-   - blockAnchor: id или customId блока
-   - lineAnchor: id или customId строки
-   - fragmentAnchor: id фрагмента (этап 2.3.4, пока игнорируется) */
+function _cssEscape(s){
+  if (window.CSS && typeof CSS.escape === "function"){
+    return CSS.escape(String(s));
+  }
+  return String(s).replace(/[^a-zA-Z0-9\-_]/g, "\\$&");
+}
+
 function scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor){
   if (!blockAnchor && !lineAnchor) return;
-  const doc = S.documents[docId];
+  const doc = _safeGet(S.documents, docId);
   if (!doc) return;
 
-  /* Ищем блок по customId → id */
   let block = null;
   if (blockAnchor){
     block = (doc.blocks || []).find(b => b.customId && b.customId === blockAnchor);
@@ -901,14 +1380,18 @@ function scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor){
   if (!block) return;
 
   requestAnimationFrame(() => {
-    const blockEl = document.querySelector(`#editor .block[data-id="${block.id}"]`);
+    const blockEl = document.querySelector(
+      `#editor .block[data-id="${_cssEscape(block.id)}"]`
+    );
     if (!blockEl) return;
 
     let targetEl = blockEl;
 
-    /* Если указана строка — ищем внутри блока */
     if (lineAnchor){
-      const lineEl = blockEl.querySelector(`.line[data-line-id="${lineAnchor}"]`);
+      const esc = _cssEscape(lineAnchor);
+      const lineEl =
+        blockEl.querySelector(`.line[data-line-id="${esc}"]`) ||
+        blockEl.querySelector(`.line[data-line-anchor="${esc}"]`);
       if (lineEl) targetEl = lineEl;
     }
 
@@ -918,7 +1401,6 @@ function scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor){
       targetEl.scrollIntoView();
     }
 
-    /* Подсветка */
     targetEl.classList.remove("anchor-highlight");
     void targetEl.offsetWidth;
     targetEl.classList.add("anchor-highlight");
@@ -926,8 +1408,6 @@ function scrollToAnchorPath(docId, blockAnchor, lineAnchor, fragmentAnchor){
   });
 }
 
-/* Обратная совместимость: старая подпись scrollToAnchor(docId, anchor).
-   Если anchor содержит # — разбираем как block#line#fragment. */
 function scrollToAnchor(docId, anchor){
   if (!anchor) return;
   const parts = String(anchor).split("#").map(p => p.trim());
@@ -946,18 +1426,35 @@ function pushToHistory(id){
   S.ui.historyIndex = h.length - 1;
 }
 
+function _isAlive(id){
+  const doc = _safeGet(S.documents, id);
+  return !!doc && !doc.trashed;
+}
+
 function historyBack(){
-  const i = S.ui.historyIndex;
-  if (i <= 0) return null;
-  S.ui.historyIndex = i - 1;
-  return S.ui.history[S.ui.historyIndex];
+  let i = S.ui.historyIndex;
+  while (i > 0){
+    i--;
+    const id = S.ui.history[i];
+    if (_isAlive(id)){
+      S.ui.historyIndex = i;
+      return id;
+    }
+  }
+  return null;
 }
 
 function historyForward(){
-  const i = S.ui.historyIndex;
-  if (i >= S.ui.history.length - 1) return null;
-  S.ui.historyIndex = i + 1;
-  return S.ui.history[S.ui.historyIndex];
+  let i = S.ui.historyIndex;
+  while (i < S.ui.history.length - 1){
+    i++;
+    const id = S.ui.history[i];
+    if (_isAlive(id)){
+      S.ui.historyIndex = i;
+      return id;
+    }
+  }
+  return null;
 }
 
 /* ---------- UI-настройки ---------- */
@@ -1014,7 +1511,8 @@ return {
 
   getActiveDoc, getBlocks,
 
-  snapshot, pushHistory, commit, commitDebounced,
+  snapshot, snapshotForHistory,
+  commit, commitDebounced, flushPending,
   save, saveNow, load,
   undo, redo,
   setSelectedBlock, clearSelection,
@@ -1025,18 +1523,27 @@ return {
   duplicateDocument, trashDocument, restoreDocument, purgeDocument,
   emptyTrash, autoCleanTrash, listDocuments,
 
-  /* wikilinks / backlinks */
+  /* [Пакет 12] конвертер типов */
+  convertBlockType,
+
+  /* [Пакет 11] применить startupMode */
+  applyStartupMode: _applyStartupMode,
+
+  /* [Пакет 11] автопереименование из текста */
+  maybeAutoRename: _maybeAutoRename,
+
   resolveDocByName, rebuildBacklinks, getBacklinks, findUnlinkedMentions,
-  /* ПАТЧ 2.2 */
   scrollToAnchor,
-  /* ПАТЧ 2.3.1 */
   scrollToAnchorPath,
   anchorToString,
 
   historyBack, historyForward,
   setUI,
   maybeBackup, startTimers,
-  markSaved, markDirty, markError
+  markSaved, markDirty, markError,
+
+  /* helpers для интеграции */
+  isValidId: _isValidId
 };
 
 })();
