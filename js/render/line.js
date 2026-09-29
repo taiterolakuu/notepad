@@ -5,6 +5,11 @@
    [Пакет 9]  slash-меню: maybeOpen в oninput, slashKeydown в keyLine.
    [Пакет 12] keyLine: Enter split через toSourceHTML;
               e.isComposing guard для IME.
+   [Фикс]     keyLine ищет строку по lineId в актуальном b.lines,
+              не полагается на замыкание `ln` — защита от
+              пересоздания b.lines через syncBlockLines.
+              oninput использует e.isComposing (InputEvent),
+              не ручной dataset.composing.
 
    Зависит от: render/_shared, render/wikilinks, render/paste
    ============================================================ */
@@ -25,6 +30,18 @@ const render = () => window.App.render.render();
 
 const Wikilinks = () => window.App.renderWikilinks;
 const Paste     = () => window.App.renderPaste;
+
+/* ---------- Хелпер: найти актуальную строку в b.lines по id ---------- */
+
+function findLnById(b, lineId){
+  if (!b || !Array.isArray(b.lines) || !lineId) return null;
+  return b.lines.find(l => l.id === lineId) || null;
+}
+
+function findLnIndexById(b, lineId){
+  if (!b || !Array.isArray(b.lines) || !lineId) return -1;
+  return b.lines.findIndex(l => l.id === lineId);
+}
 
 /* ---------- Рендер строки ---------- */
 
@@ -53,38 +70,32 @@ function renderLine(b, ln, i){
     setSelectedBlock(b.id);
   };
 
-  lineEl.oninput = () => {
-    /* [Пакет 12] IME — не трогаем */
-    if (lineEl.dataset.composing === "1") return;
+  lineEl.oninput = (e) => {
+    /* [Пакет 12] InputEvent.isComposing — надёжнее ручного флага.
+       Ручной dataset.composing убран — он «залипал» в Chrome. */
+    if (e && e.isComposing) return;
 
     const before = snapshot();
+
+    /* Работаем с актуальной строкой по id, не с замыканием `ln` */
+    const currentLn = findLnById(b, lineEl.dataset.lineId);
+    if (!currentLn) return;
 
     let html = lineEl.innerHTML;
     if (html === "<br>" || html === "<br/>" || html === "<br />"){
       html = "";
     }
-    ln.text = Wikilinks().toSourceHTML(html);
+    currentLn.text = Wikilinks().toSourceHTML(html);
     b.content = b.lines.map(l => l.text).join("<br>");
 
     try { window.App.wikilinkPopover?.onInput(b, lineEl); } catch(e){}
-
-    /* [Пакет 9] детект "/" в начале — открыть слэш-меню */
     try { window.App.menusSlash?.maybeOpen?.(lineEl, b.id); } catch(e){}
 
     save();
     commitDebounced(before);
   };
 
-  /* [Пакет 12] IME composition events */
-  lineEl.addEventListener("compositionstart", () => {
-    lineEl.dataset.composing = "1";
-  });
-  lineEl.addEventListener("compositionend", () => {
-    lineEl.dataset.composing = "0";
-    lineEl.dispatchEvent(new Event("input", { bubbles: true }));
-  });
-
-  lineEl.onkeydown = (e) => keyLine(e, b, ln, i, lineEl);
+  lineEl.onkeydown = (e) => keyLine(e, b, lineEl);
   lineEl.onpaste = Paste().makePasteHandler(lineEl);
 
   return lineEl;
@@ -136,20 +147,26 @@ function placeCaretEnd(el){
 
 /* ---------- keyLine ---------- */
 
-function keyLine(e, b, ln, i, lineEl){
+function keyLine(e, b, lineEl){
   /* [Пакет 12] IME — не вмешиваемся */
   if (e.isComposing || e.keyCode === 229) return;
 
-  /* [Пакет 9] слэш-меню имеет приоритет над остальной логикой */
+  /* [Пакет 9] слэш-меню имеет приоритет */
   if (window.App.menusSlash?.slashKeydown?.(e)) return;
 
   if (window.App.wikilinkPopover && window.App.wikilinkPopover.isOpen()){
     if (window.App.wikilinkPopover.handleKey(e, b, lineEl)) return;
   }
 
+  /* Актуальные индексы/объект строки — на момент нажатия */
+  const lineId = lineEl.dataset.lineId;
+  let i = findLnIndexById(b, lineId);
+  if (i < 0) return;
+  let ln = b.lines[i];
+
   const isMod = e.ctrlKey || e.metaKey;
 
-  /* Ctrl+Enter → новый блок */
+  /* ---------- Ctrl+Enter → новый блок ---------- */
   if (isMod && !e.shiftKey && e.key === "Enter"){
     e.preventDefault();
     const blocks = window.App.state.getBlocks();
@@ -158,7 +175,7 @@ function keyLine(e, b, ln, i, lineEl){
     return;
   }
 
-  /* Ctrl+Backspace → удалить строку */
+  /* ---------- Ctrl+Backspace → удалить строку ---------- */
   if (isMod && e.key === "Backspace"){
     e.preventDefault();
     if (b.lines.length > 1){
@@ -180,7 +197,7 @@ function keyLine(e, b, ln, i, lineEl){
       }, 0);
     } else {
       const old = snapshot();
-      ln.text = "";
+      b.lines[0].text = "";
       b.content = "";
       commit(old);
       render();
@@ -188,36 +205,56 @@ function keyLine(e, b, ln, i, lineEl){
     return;
   }
 
-  /* Enter → split */
+  /* ---------- Enter → split ---------- */
   if (e.key === "Enter" && !e.shiftKey){
     e.preventDefault();
+
     const sel = getSelection();
     if (!sel.rangeCount) return;
     const r = sel.getRangeAt(0);
     if (!lineEl.contains(r.startContainer)) return;
 
-    const leftRange = document.createRange();
-    leftRange.setStart(lineEl, 0);
-    leftRange.setEnd(r.startContainer, r.startOffset);
-    const leftFrag = leftRange.cloneContents();
-    const leftDiv = document.createElement("div");
-    leftDiv.appendChild(leftFrag);
-    const beforeHTML = Wikilinks().toSourceHTML(leftDiv.innerHTML);
+    /* BEFORE */
+    const beforeRange = document.createRange();
+    beforeRange.setStart(lineEl, 0);
+    beforeRange.setEnd(r.startContainer, r.startOffset);
+    const beforeFrag = beforeRange.cloneContents();
+    const beforeDiv = document.createElement("div");
+    beforeDiv.appendChild(beforeFrag);
+    let beforeHTML = beforeDiv.innerHTML;
+    if (!beforeHTML && r.startContainer.nodeType === Node.TEXT_NODE){
+      beforeHTML = r.startContainer.textContent.slice(0, r.startOffset);
+    }
 
-    const rightRange = document.createRange();
-    rightRange.setStart(r.startContainer, r.startOffset);
-    rightRange.setEnd(lineEl, lineEl.childNodes.length);
-    const rightFrag = rightRange.cloneContents();
-    const rightDiv = document.createElement("div");
-    rightDiv.appendChild(rightFrag);
-    const afterHTML = Wikilinks().toSourceHTML(rightDiv.innerHTML);
+    /* AFTER */
+    const afterRange = document.createRange();
+    afterRange.setStart(r.startContainer, r.startOffset);
+    afterRange.setEnd(lineEl, lineEl.childNodes.length);
+    const afterFrag = afterRange.cloneContents();
+    const afterDiv = document.createElement("div");
+    afterDiv.appendChild(afterFrag);
+    let afterHTML = afterDiv.innerHTML;
+    if (!afterHTML && r.startContainer.nodeType === Node.TEXT_NODE){
+      afterHTML = r.startContainer.textContent.slice(r.startOffset);
+    }
+
+    const beforeSrc = Wikilinks().toSourceHTML(beforeHTML);
+    const afterSrc  = Wikilinks().toSourceHTML(afterHTML);
 
     const old = snapshot();
 
-    ln.text = beforeHTML;
+    /* Берём актуальную строку по id, не замыкание */
+    const cur = findLnById(b, lineId);
+    if (!cur) return;
+    cur.text = beforeSrc;
 
-    const newLn = newLine(afterHTML);
-    b.lines.splice(i + 1, 0, newLn);
+    const newLn = newLine(afterSrc);
+
+    /* Индекс пересчитываем на момент вставки */
+    const idxNow = findLnIndexById(b, lineId);
+    if (idxNow < 0) return;
+
+    b.lines.splice(idxNow + 1, 0, newLn);
     b.content = b.lines.map(l => l.text).join("<br>");
 
     commit(old);
@@ -240,7 +277,7 @@ function keyLine(e, b, ln, i, lineEl){
     return;
   }
 
-  /* Backspace в начале строки → merge с предыдущей */
+  /* ---------- Backspace в начале строки → merge ---------- */
   if (e.key === "Backspace" && caretAtStart(lineEl)){
     if (i === 0){
       const blocks = window.App.state.getBlocks();
@@ -277,9 +314,14 @@ function keyLine(e, b, ln, i, lineEl){
       }
     }
     e.preventDefault();
-    const prevLn = b.lines[i - 1];
-    const curText = ln.text || "";
 
+    /* Актуальные строки */
+    const cur  = findLnById(b, lineId);
+    if (!cur) return;
+    const prevLn = b.lines[i - 1];
+    if (!prevLn) return;
+
+    const curText = cur.text || "";
     const old = snapshot();
     const oldPrevText = prevLn.text || "";
     prevLn.text = oldPrevText + curText;
@@ -297,7 +339,7 @@ function keyLine(e, b, ln, i, lineEl){
         tmp.innerHTML = oldPrevText;
         const oldLen = tmp.innerText.length;
         try {
-          const r = document.createRange();
+          const rr = document.createRange();
           const walker = document.createTreeWalker(prevEl2, NodeFilter.SHOW_TEXT);
           let acc = 0;
           let targetNode = null;
@@ -312,11 +354,11 @@ function keyLine(e, b, ln, i, lineEl){
             acc += node.textContent.length;
           }
           if (targetNode){
-            r.setStart(targetNode, targetOffset);
-            r.collapse(true);
+            rr.setStart(targetNode, targetOffset);
+            rr.collapse(true);
             const s = getSelection();
             s.removeAllRanges();
-            s.addRange(r);
+            s.addRange(rr);
           } else {
             placeCaretEnd(prevEl2);
           }
@@ -329,7 +371,7 @@ function keyLine(e, b, ln, i, lineEl){
     return;
   }
 
-  /* Delete в конце → merge со следующей */
+  /* ---------- Delete в конце → merge со следующей ---------- */
   if (e.key === "Delete" && caretAtEnd(lineEl)){
     if (i >= b.lines.length - 1){
       const blocks = window.App.state.getBlocks();
@@ -348,23 +390,29 @@ function keyLine(e, b, ln, i, lineEl){
       return;
     }
     e.preventDefault();
+
+    const cur = findLnById(b, lineId);
+    if (!cur) return;
     const nextLn = b.lines[i + 1];
+    if (!nextLn) return;
+
     const old = snapshot();
-    ln.text = (ln.text || "") + (nextLn.text || "");
+    cur.text = (cur.text || "") + (nextLn.text || "");
     b.lines.splice(i + 1, 1);
     b.content = b.lines.map(l => l.text).join("<br>");
     commit(old);
     render();
+
     setTimeout(() => {
       const el2 = document.querySelector(
-        `#editor .block[data-id="${b.id}"] .line[data-line-id="${ln.id}"]`
+        `#editor .block[data-id="${b.id}"] .line[data-line-id="${cur.id}"]`
       );
       if (el2){ placeCaretEnd(el2); el2.focus(); }
     }, 0);
     return;
   }
 
-  /* ArrowUp */
+  /* ---------- ArrowUp ---------- */
   if (e.key === "ArrowUp" && caretAtStart(lineEl)){
     if (i > 0){
       e.preventDefault();
@@ -397,7 +445,7 @@ function keyLine(e, b, ln, i, lineEl){
     return;
   }
 
-  /* ArrowDown */
+  /* ---------- ArrowDown ---------- */
   if (e.key === "ArrowDown" && caretAtEnd(lineEl)){
     if (i < b.lines.length - 1){
       e.preventDefault();

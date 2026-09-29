@@ -205,7 +205,10 @@ function syncBlockLines(b){
   const nextLines = parts.map((html, i) => {
     const existing = b.lines[i];
     if (existing && typeof existing === "object"){
-      return { ...existing, text: html };
+      /* Мутация вместо spread — сохраняем ссылку,
+        чтобы замыкания в renderLine оставались валидными */
+      existing.text = html;
+      return existing;
     }
     return line(html);
   });
