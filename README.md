@@ -1,5 +1,5 @@
 # Paper — Personal Notebook
-
+![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
 Локальное веб-приложение для заметок с блочным редактором, мультидокументом,
 wikilinks, шаблонами, пароль-замком и полной работой офлайн. Данные хранятся
 в IndexedDB браузера. Никакого бэкенда, никакой отправки данных наружу.
@@ -61,6 +61,8 @@ wikilinks, шаблонами, пароль-замком и полной раб�
 - Реактивной системы нет. Перерисовка — императивным `render()`.
 
 ### Порядок загрузки скриптов
+
+```text
 js/db.js
 js/utils.js
 js/state.js
@@ -100,7 +102,7 @@ js/menus/lines-panel.js
 js/menus/bind.js
 js/menus.js
 js/main.js
-
+```
 Точка входа — `js/main.js`. Он делает:
 
 1. `await App.db.init()` — открывает IndexedDB.
@@ -114,59 +116,61 @@ js/main.js
 ---
 
 ## Структура папок
-.
-├── index.html # единственная HTML-страница
-├── css/
-│ ├── tokens.css # CSS-переменные: темы, шрифты, focus-ring
-│ ├── base.css # reset, layout, шапка, page, title, скроллбары
-│ ├── blocks.css # .block, .handle, .body, типографика, таблица
-│ ├── lists.css # todo, ul/ol, маркеры
-│ ├── columns.css # табличная сетка ячеек, аккордеон ctx-меню
-│ ├── lines.css # .lines, панель строк, секция «Строки»
-│ ├── floating.css # floatbar, palette, slash, fontmenu, handlemenu, swatches
-│ ├── sidebar.css # sidebar, tabs, modal, props, settings, lock
-│ ├── wikilinks.css # .wikilink, backlinks, anchor-highlight
-│ └── misc.css # add-block-zone, block-gap, адаптив, print
-└── js/
-├── db.js # IndexedDB-обёртка + миграция из localStorage
-├── utils.js # константы, escape, sanitize, нормализация, модель cells
-├── state.js # S, история, undo/redo, backlinks, CRUD документов
-├── render.js # фасад над js/render/*
-├── render/
-│ ├── _shared.js # общие зависимости для render/*
-│ ├── wikilinks.js # toDisplayHTML / toSourceHTML, click по ссылкам
-│ ├── paste.js # paste handler + cleanupEmptyLis
-│ ├── line.js # renderLine + keyLine (Enter/Backspace/arrows)
-│ ├── block.js # renderBlock, table, columns, ctx-меню ячейки
-│ ├── cols-drag.js # drag ячеек, resize высоты/ширины
-│ └── main.js # главный render(), add(), focusActive(), fonts
-├── sidebar.js # фасад над js/sidebar/*
-├── sidebar/
-│ ├── _shared.js # TEMPLATES, placeCtxMenu, общее состояние
-│ ├── modals.js # openModal, свойства, шаблоны, папки
-│ ├── folders.js # строка папки, ctx-меню папки, время
-│ ├── cards.js # карточка документа, ctx-меню карточки
-│ ├── list.js # список карточек и папок
-│ └── main.js # render() sidebar, секции, теги, breadcrumbs
-├── tabs.js # панель вкладок над редактором
-├── io.js # экспорт HTML/MD/JSON/PDF/ZIP, импорт, картинки
-├── backlinks.js # панель backlinks + findUnlinkedMentions
-├── wikilink-popover.js # автодополнение [[Имя]] у каретки
-├── hotkeys.js # единый реестр горячих клавиш
-├── settings.js # модалка настроек
-├── lock.js # пароль-замок, PBKDF2, автоблокировка
-├── menus.js # фасад над js/menus/*
-├── menus/
-│ ├── _shared.js # общее состояние меню
-│ ├── slash.js # слэш-меню «/тип»
-│ ├── palette.js # командная палитра (Ctrl+K)
-│ ├── search.js # глобальный поиск по содержимому
-│ ├── floatbar.js # floatbar выделения, списки, strike
-│ ├── handle-menu.js # handle-menu, fontmenu, секция колонок
-│ ├── lines-panel.js # панель строк блока
-│ └── bind.js # единая привязка обработчиков меню
-└── main.js # точка входа: init(), bindTitle, bindHeader
 
+```text
+.
+├── index.html                  # единственная HTML-страница
+├── css/
+│   ├── tokens.css              # CSS-переменные: темы, шрифты, focus-ring
+│   ├── base.css                # reset, layout, шапка, page, title, скроллбары
+│   ├── blocks.css              # .block, .handle, .body, типографика, таблица
+│   ├── lists.css               # todo, ul/ol, маркеры
+│   ├── columns.css             # табличная сетка ячеек, аккордеон ctx-меню
+│   ├── lines.css               # .lines, панель строк, секция «Строки»
+│   ├── floating.css            # floatbar, palette, slash, fontmenu, handlemenu, swatches
+│   ├── sidebar.css             # sidebar, tabs, modal, props, settings, lock
+│   ├── wikilinks.css           # .wikilink, backlinks, anchor-highlight
+│   └── misc.css                # add-block-zone, block-gap, адаптив, print
+└── js/
+    ├── db.js                   # IndexedDB-обёртка + миграция из localStorage
+    ├── utils.js                # константы, escape, sanitize, нормализация, модель cells
+    ├── state.js                # S, история, undo/redo, backlinks, CRUD документов
+    ├── render.js               # фасад над js/render/*
+    ├── render/
+    │   ├── _shared.js          # общие зависимости для render/*
+    │   ├── wikilinks.js        # toDisplayHTML / toSourceHTML, click по ссылкам
+    │   ├── paste.js            # paste handler + cleanupEmptyLis
+    │   ├── line.js             # renderLine + keyLine (Enter/Backspace/arrows)
+    │   ├── block.js            # renderBlock, table, columns, ctx-меню ячейки
+    │   ├── cols-drag.js        # drag ячеек, resize высоты/ширины
+    │   └── main.js             # главный render(), add(), focusActive(), fonts
+    ├── sidebar.js              # фасад над js/sidebar/*
+    ├── sidebar/
+    │   ├── _shared.js          # TEMPLATES, placeCtxMenu, общее состояние
+    │   ├── modals.js           # openModal, свойства, шаблоны, папки
+    │   ├── folders.js          # строка папки, ctx-меню папки, время
+    │   ├── cards.js            # карточка документа, ctx-меню карточки
+    │   ├── list.js             # список карточек и папок
+    │   └── main.js             # render() sidebar, секции, теги, breadcrumbs
+    ├── tabs.js                 # панель вкладок над редактором
+    ├── io.js                   # экспорт HTML/MD/JSON/PDF/ZIP, импорт, картинки
+    ├── backlinks.js            # панель backlinks + findUnlinkedMentions
+    ├── wikilink-popover.js     # автодополнение [[Имя]] у каретки
+    ├── hotkeys.js              # единый реестр горячих клавиш
+    ├── settings.js             # модалка настроек
+    ├── lock.js                 # пароль-замок, PBKDF2, автоблокировка
+    ├── menus.js                # фасад над js/menus/*
+    ├── menus/
+    │   ├── _shared.js          # общее состояние меню
+    │   ├── slash.js            # слэш-меню «/тип»
+    │   ├── palette.js          # командная палитра (Ctrl+K)
+    │   ├── search.js           # глобальный поиск по содержимому
+    │   ├── floatbar.js         # floatbar выделения, списки, strike
+    │   ├── handle-menu.js      # handle-menu, fontmenu, секция колонок
+    │   ├── lines-panel.js      # панель строк блока
+    │   └── bind.js             # единая привязка обработчиков меню
+    └── main.js                 # точка входа: init(), bindTitle, bindHeader
+```
 ---
 
 ## Описание по файлам
