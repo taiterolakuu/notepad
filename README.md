@@ -3,6 +3,8 @@
 ![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=for-the-badge&logo=html5&logoColor=white)
 ![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=for-the-badge&logo=css3&logoColor=white)
 ![IndexedDB](https://img.shields.io/badge/IndexedDB-FFCA28?style=for-the-badge&logo=indexeddb&logoColor=black)
+![No Backend](https://img.shields.io/badge/backend-none-10B981?style=for-the-badge)
+![Offline](https://img.shields.io/badge/offline-100%25-1E293B?style=for-the-badge)
 ---
 Локальное веб-приложение для заметок с блочным редактором, мультидокументом,
 wikilinks, шаблонами, пароль-замком и полной работой офлайн. Данные хранятся
