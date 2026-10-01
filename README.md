@@ -620,63 +620,6 @@ b.padding, b.minHeight, b.containerBg, b.containerRadius, b.width
   }
 }
 ```
-Инварианты
-    b.cells (columns). Нет двух ячеек с одинаковыми (x, y). В каждом y ячейки прижаты влево (x = 0, 1, 2, ...). Массив отсортирован по (y, x). Гарантия — U._recompactCells(b).
-    b.cols. ≥ 2. Всегда ≥ max(cell.x) + 1.
-    b.colWidths. Длина = b.cols. Все значения > 0.
-    b.rows (table). Минимум [["",""],["",""]].
-    b.lines (LINE_TYPES). Минимум одна строка. b.content = b.lines.map(l => l.text).join("<br>").
-    Sanitize. Все content проходят через U.sanitize при нормализации и вставке.
-
-Потоки данных
-Сохранение
-    Изменение → App.state.save() (debounce saveDebounceMs, дефолт 150 мс) → saveNow() → App.db.saveDocument(doc).
-    visibilitychange / pagehide → flushPending() + saveNow().
-    Индикатор статуса #status: dirty (жёлтый) → unsaved (оранжевый) → saved (зелёный) / error (красный).
-
-Undo/redo
-    Перед мутацией — snapshot() (JSON текущего документа, картинки зарезаны на #img-ref:id).
-    После — commit(before) или commitDebounced(before).
-    undo() / redo() восстанавливают документ целиком.
-    История привязана к документу.
-Backlinks
-    rebuildBacklinks(docId) — перебирает все wikilinks в документе, находит целевые документы, кладёт в S.backlinks[targetId].
-    Панель App.backlinks.render() показывает обратные ссылки + mentions.
-Рендер
-    App.render.render():
-        title,
-        editor.replaceChildren(...) — пересоздаёт все .block,
-        вставляет .block-gap между блоками,
-        добавляет .add-block-zone,
-        идемпотентно привязывает bindColumnResizer и renderColsDrag.bind,
-        планирует backlinks.render через rAF.
-Хоткеи по умолчанию
-Действие	Сочетание
-Новый документ	mod+n
-Новый из шаблона	mod+shift+n
-Открыть документ	mod+o
-Сохранить	mod+s
-Дублировать	mod+shift+s
-Закрыть вкладку	mod+w
-Следующая/предыдущая вкладка	mod+tab / mod+shift+tab
-Переименовать документ	F2
-В корзину	Delete
-Свернуть сайдбар	mod+\
-Глобальный поиск	mod+shift+f
-Командная палитра	mod+k
-Настройки	mod+,
-Назад/вперёд по истории	alt+← / alt+→
-Нумерованный список	mod+shift+7
-Снять список	mod+shift+8
-Undo/Redo	mod+z / mod+y
-Панель строк	mod+shift+l
-Удалить блок	mod+Backspace
-Новый блок	mod+Enter
-Новая строка	mod+shift+Enter
-Ctrl/Cmd+Arrow	расширение выделения по словам
-
-Хоткеи настраиваются в Настройки → Хоткеи.
-
 ## Инварианты
 
 1. **`b.cells` (columns).** Нет двух ячеек с одинаковыми `(x, y)`. В каждом `y` ячейки прижаты влево (`x = 0, 1, 2, ...`). Массив отсортирован по `(y, x)`. Гарантия — `U._recompactCells(b)`.
