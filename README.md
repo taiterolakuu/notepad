@@ -1,5 +1,9 @@
 # Paper — Personal Notebook
 ![JavaScript](https://img.shields.io/badge/JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
+![HTML5](https://img.shields.io/badge/HTML5-E34F26?style=for-the-badge&logo=html5&logoColor=white)
+![CSS3](https://img.shields.io/badge/CSS3-1572B6?style=for-the-badge&logo=css3&logoColor=white)
+![IndexedDB](https://img.shields.io/badge/IndexedDB-FFCA28?style=for-the-badge&logo=indexeddb&logoColor=black)
+---
 Локальное веб-приложение для заметок с блочным редактором, мультидокументом,
 wikilinks, шаблонами, пароль-замком и полной работой офлайн. Данные хранятся
 в IndexedDB браузера. Никакого бэкенда, никакой отправки данных наружу.
